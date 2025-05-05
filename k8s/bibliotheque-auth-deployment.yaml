@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bibliotheque-auth
+  namespace: bibliotheque
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bibliotheque-auth
+  template:
+    metadata:
+      labels:
+        app: bibliotheque-auth
+    spec:
+      containers:
+      - name: auth
+        image: ${DOCKER_USERNAME}/bibliotheque-auth:${IMAGE_TAG}
+        ports:
+        - containerPort: 3002
+        env:
+        - name: PORT
+          value: "3002"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: bibliotheque-secrets
+              key: jwt-secret
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: bibliotheque-db-secrets
+              key: db-host
+        - name: DB_PORT
+          valueFrom:
+            secretKeyRef:
+              name: bibliotheque-db-secrets
+              key: db-port
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: bibliotheque-db-secrets
+              key: db-name
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: bibliotheque-db-secrets
+              key: db-user
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: bibliotheque-db-secrets
+              key: db-password
+        - name: DB_SSL
+          value: "true"
+        resources:
+          limits:
+            cpu: "0.3"
+            memory: "256Mi"
+          requests:
+            cpu: "0.1"
+            memory: "128Mi"
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 3002
+          initialDelaySeconds: 15
+          periodSeconds: 10
