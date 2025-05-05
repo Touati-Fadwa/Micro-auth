@@ -1,0 +1,274 @@
+name: Auth Microservice CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'microservice-auth/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'microservice-auth/**'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Nécessaire pour SonarQube
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: microservice-auth/package-lock.json
+    
+    - name: Install dependencies
+      run: |
+        cd microservice-auth
+        npm ci
+    
+    - name: Run tests
+      run: |
+        cd microservice-auth
+        npm test -- --coverage
+    
+    - name: SonarQube Scan
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      with:
+        projectBaseDir: microservice-auth
+        args: >
+          -Dsonar.projectKey=bibliotheque-auth
+          -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+          -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+
+  build-and-push:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Login to Docker Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ secrets.DOCKER_REGISTRY }}
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: ./microservice-auth
+        push: true
+        tags: ${{ secrets.DOCKER_REGISTRY }}/bibliotheque-auth:${{ github.sha }},${{ secrets.DOCKER_REGISTRY }}/bibliotheque-auth:latest
+        cache-from: type=registry,ref=${{ secrets.DOCKER_REGISTRY }}/bibliotheque-auth:latest
+        cache-to: type=inline
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+    
+    - name: Configure K3s
+      uses: azure/k8s-set-context@v3
+      with:
+        kubeconfig: ${{ secrets.K3S_CONFIG }}
+    
+    - name: Create K3s Deployment and Service
+      run: |
+        # Créer ou mettre à jour le déploiement
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: bibliotheque-auth
+          namespace: bibliotheque
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: bibliotheque-auth
+          template:
+            metadata:
+              labels:
+                app: bibliotheque-auth
+            spec:
+              containers:
+              - name: auth
+                image: ${{ secrets.DOCKER_REGISTRY }}/bibliotheque-auth:${{ github.sha }}
+                ports:
+                - containerPort: 3002
+                env:
+                - name: PORT
+                  value: "3002"
+                - name: JWT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: bibliotheque-secrets
+                      key: jwt-secret
+                - name: DB_HOST
+                  valueFrom:
+                    secretKeyRef:
+                      name: bibliotheque-db-secrets
+                      key: db-host
+                - name: DB_PORT
+                  valueFrom:
+                    secretKeyRef:
+                      name: bibliotheque-db-secrets
+                      key: db-port
+                - name: DB_NAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: bibliotheque-db-secrets
+                      key: db-name
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: bibliotheque-db-secrets
+                      key: db-user
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: bibliotheque-db-secrets
+                      key: db-password
+                - name: DB_SSL
+                  value: "true"
+                resources:
+                  limits:
+                    cpu: "0.3"
+                    memory: "256Mi"
+                  requests:
+                    cpu: "0.1"
+                    memory: "128Mi"
+                readinessProbe:
+                  httpGet:
+                    path: /api/health
+                    port: 3002
+                  initialDelaySeconds: 15
+                  periodSeconds: 10
+        EOF
+        
+        # Créer ou mettre à jour le service avec NodePort
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: bibliotheque-auth-service
+          namespace: bibliotheque
+        spec:
+          type: NodePort
+          ports:
+          - port: 3002
+            targetPort: 3002
+            nodePort: 30082
+          selector:
+            app: bibliotheque-auth
+        EOF
+    
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/bibliotheque-auth -n bibliotheque --timeout=180s
+    
+    - name: Rollback on failure
+      if: failure()
+      run: |
+        kubectl rollout undo deployment/bibliotheque-auth -n bibliotheque
+        echo "Deployment failed, rolling back to previous version"
+
+  monitoring:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - name: Configure Prometheus & Grafana
+      run: |
+        echo "Setting up Prometheus and Grafana monitoring for Auth Microservice"
+        
+        # Créer ou mettre à jour ConfigMap pour Prometheus
+        kubectl create configmap prometheus-auth-config --from-literal=scrape-config='
+        - job_name: "auth-service"
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["bibliotheque-auth:3002"]
+        ' -n bibliotheque --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Créer ou mettre à jour ConfigMap pour Grafana
+        kubectl create configmap grafana-auth-dashboard --from-literal=dashboard='
+        {
+          "title": "Auth Service Dashboard",
+          "panels": [
+            {
+              "title": "Request Rate",
+              "type": "graph",
+              "datasource": "Prometheus",
+              "targets": [
+                {
+                  "expr": "rate(http_requests_total{service=\"auth\"}[5m])"
+                }
+              ]
+            },
+            {
+              "title": "Response Time",
+              "type": "graph",
+              "datasource": "Prometheus",
+              "targets": [
+                {
+                  "expr": "http_request_duration_seconds{service=\"auth\"}"
+                }
+              ]
+            }
+          ]
+        }
+        ' -n bibliotheque --dry-run=client -o yaml | kubectl apply -f -
+        
+        # Redémarrer Prometheus et Grafana pour appliquer les changements
+        kubectl rollout restart deployment prometheus -n monitoring
+        kubectl rollout restart deployment grafana -n monitoring
+
+  k9s-guide:
+    needs: monitoring
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    
+    steps:
+    - name: Guide pour travailler avec K9s sur K3s
+      run: |
+        echo "## Guide pour travailler avec K9s sur K3s"
+        echo ""
+        echo "1. Installer K9s: https://k9scli.io/"
+        echo "2. Configurer K9s pour utiliser votre kubeconfig K3s:"
+        echo "   export KUBECONFIG=/chemin/vers/votre/k3s.yaml"
+        echo "3. Lancer K9s: k9s"
+        echo ""
+        echo "Commandes utiles dans K9s:"
+        echo "- :deploy pour voir les déploiements"
+        echo "- :svc pour voir les services"
+        echo "- :pod pour voir les pods"
+        echo "- Ctrl+d pour supprimer une ressource"
+        echo "- Ctrl+k pour tuer un pod"
+        echo "- d pour décrire une ressource"
+        echo "- l pour voir les logs"
+        echo ""
+        echo "Pour accéder au service Auth directement: http://IP_DU_NOEUD:30082"
+        echo "Pour accéder à Grafana: http://IP_DU_NOEUD:30300 (si configuré sur ce port)"
+        echo "Pour accéder à Prometheus: http://IP_DU_NOEUD:30900 (si configuré sur ce port)"
