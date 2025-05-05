@@ -3,12 +3,8 @@ name: Auth Microservice CI/CD
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'microservice-auth/**'
   pull_request:
     branches: [ main ]
-    paths:
-      - 'microservice-auth/**'
 
 jobs:
   build-and-test:
