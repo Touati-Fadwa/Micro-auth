@@ -1,8 +1,6 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 const { Op } = require("sequelize");
-const { User } = require("../src/models");
-const authController = require("../src/controllers/auth");
 
 // Mock des modules
 jest.mock("jsonwebtoken");
@@ -13,6 +11,10 @@ jest.mock("../src/models", () => ({
     create: jest.fn(),
   },
 }));
+
+// ❗ L'import de authController DOIT venir après les mocks
+const { User } = require("../src/models");
+const authController = require("../src/controllers/auth");
 
 describe("Auth Controller", () => {
   let req, res;
@@ -46,7 +48,6 @@ describe("Auth Controller", () => {
     test("should return 401 if user is not found", async () => {
       req.body = { email: "test@example.com", password: "password123" };
 
-      // Mock User.findOne to return null
       User.findOne.mockResolvedValue(null);
 
       await authController.login(req, res);
@@ -64,7 +65,6 @@ describe("Auth Controller", () => {
     test("should return 401 if password is invalid", async () => {
       req.body = { email: "test@example.com", password: "password123" };
 
-      // Mock User.findOne to return a user
       const mockUser = {
         id: 1,
         email: "test@example.com",
@@ -83,7 +83,6 @@ describe("Auth Controller", () => {
     test("should return user data and token if login is successful", async () => {
       req.body = { email: "test@example.com", password: "password123" };
 
-      // Mock User.findOne to return a user
       const mockUser = {
         id: 1,
         name: "Test User",
@@ -93,7 +92,6 @@ describe("Auth Controller", () => {
       };
       User.findOne.mockResolvedValue(mockUser);
 
-      // Mock jwt.sign to return a token
       const mockToken = "fake-jwt-token";
       jwt.sign.mockReturnValue(mockToken);
 
@@ -108,7 +106,7 @@ describe("Auth Controller", () => {
           name: "Test User",
         },
         "test-secret",
-        { expiresIn: "24h" },
+        { expiresIn: "24h" }
       );
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith({
@@ -120,6 +118,4 @@ describe("Auth Controller", () => {
       });
     });
   });
-
-  // Tests pour register et me peuvent être ajoutés ici
 });
