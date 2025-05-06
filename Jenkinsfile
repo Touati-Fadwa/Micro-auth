@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = "bibliotheque-auth"
+    IMAGE_NAME = "touatifadwa/bibliotheque-auth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
@@ -39,23 +39,27 @@ pipeline {
       }
     }
 
-    stage('Docker Build & Push') {
+    stage('Docker Build') {
       steps {
-        withCredentials([
-          usernamePassword(
-            credentialsId: '085f1818-1dd9-4505-bec2-cf5c648795a7',
-            usernameVariable: 'DOCKER_USER',
-            passwordVariable: 'DOCKER_PASS'
-          )
-        ]) {
-          script {
-            // Méthode alternative sécurisée pour docker login
-            sh '''
-              echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin "$REGISTRY"
-              docker build -t "$REGISTRY/$DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG" ./microservice-auth
-              docker push "$REGISTRY/$DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG"
-            '''
+        script {
+          dir('microservice-auth') {
+            sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
           }
+        }
+      }
+    }
+
+    stage('Docker Login & Push') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'docker-hub-credentials',
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS'
+        )]) {
+          sh '''
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin $REGISTRY
+            docker push ${IMAGE_NAME}:${IMAGE_TAG}
+          '''
         }
       }
     }
