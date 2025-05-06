@@ -42,10 +42,8 @@ pipeline {
     stage('Docker Build') {
       steps {
         script {
-          dir('Micro-auth') {
-            // Assurer que le Dockerfile se trouve dans ce répertoire ou spécifier son chemin
-            sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile ."
-          }
+          // Build from root directory where Dockerfile is located
+          sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f ./Dockerfile ."
         }
       }
     }
@@ -72,8 +70,8 @@ pipeline {
             withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
               sh '''
                 kubectl config set-context --current --namespace="$KUBE_NAMESPACE"
-                kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
-                kubectl apply -f k8s/bibliotheque-auth-service.yaml
+                kubectl apply -f microservice-auth/k8s/bibliotheque-auth-deployment.yaml
+                kubectl apply -f microservice-auth/k8s/bibliotheque-auth-service.yaml
               '''
             }
           } catch (Exception e) {
