@@ -2,9 +2,8 @@ pipeline {
   agent any
 
   environment {
-    // Utilisation de credentials sécurisés
     IMAGE_NAME = "bibliotheque-auth"
-    IMAGE_TAG = "latest"
+    IMAGE_TAG = "latest" 
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
   }
@@ -27,7 +26,7 @@ pipeline {
     stage('Build') {
       steps {
         dir('microservice-auth') {
-          sh 'npm run build'
+          sh 'npm run build' 
         }
       }
     }
@@ -42,17 +41,18 @@ pipeline {
 
     stage('Docker Build & Push') {
       steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'docker-credentials',
-          usernameVariable: 'DOCKER_USERNAME',
-          passwordVariable: 'DOCKER_PASSWORD'
-        )]) {
+        withCredentials([
+          usernamePassword(
+            credentialsId: '085f1818-1dd9-4505-bec2-cf5c648795a7', // Credential "Touati-Fadwa"
+            usernameVariable: 'DOCKER_USER',
+            passwordVariable: 'DOCKER_PASS'
+          )
+        ]) {
           script {
-            // Méthode sécurisée pour le login Docker
             sh '''
-              docker login -u $DOCKER_USERNAME --password-stdin $REGISTRY <<< "$DOCKER_PASSWORD"
-              docker build -t $REGISTRY/$DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_TAG ./microservice-auth
-              docker push $REGISTRY/$DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_TAG
+              docker login -u $DOCKER_USER --password-stdin $REGISTRY <<< "$DOCKER_PASS"
+              docker build -t $REGISTRY/$DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG ./microservice-auth
+              docker push $REGISTRY/$DOCKER_USER/$IMAGE_NAME:$IMAGE_TAG
             '''
           }
         }
@@ -61,12 +61,18 @@ pipeline {
 
     stage('Deploy to K3s') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-          sh '''
-            kubectl config set-context --current --namespace=$KUBE_NAMESPACE
-            kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
-            kubectl apply -f k8s/bibliotheque-auth-service.yaml
-          '''
+        script {
+          try {
+            withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
+              sh '''
+                kubectl config set-context --current --namespace=$KUBE_NAMESPACE
+                kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
+                kubectl apply -f k8s/bibliotheque-auth-service.yaml
+              '''
+            }
+          } catch (Exception e) {
+            error "Deployment failed: ${e.getMessage()}"
+          }
         }
       }
     }
@@ -75,11 +81,13 @@ pipeline {
       steps {
         retry(3) {
           timeout(time: 3, unit: 'MINUTES') {
-            sh '''
-              kubectl rollout status deployment/bibliotheque-auth \
-                --namespace=$KUBE_NAMESPACE \
-                --timeout=180s
-            '''
+            withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
+              sh '''
+                kubectl rollout status deployment/bibliotheque-auth \
+                  --namespace=$KUBE_NAMESPACE \
+                  --timeout=180s
+              '''
+            }
           }
         }
       }
@@ -90,16 +98,21 @@ pipeline {
     failure {
       script {
         echo "Pipeline failed! Attempting rollback..."
-        withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-          sh '''
-            kubectl rollout undo deployment/bibliotheque-auth \
-              --namespace=$KUBE_NAMESPACE || true
-          '''
+        try {
+          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
+            sh '''
+              kubectl rollout undo deployment/bibliotheque-auth \
+                --namespace=$KUBE_NAMESPACE || true
+            '''
+          }
+        } catch (Exception e) {
+          echo "Rollback failed: ${e.getMessage()}"
         }
       }
     }
     always {
       sh 'docker logout $REGISTRY || true'
+      echo "Pipeline execution completed"
     }
   }
 }
