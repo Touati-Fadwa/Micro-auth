@@ -5,7 +5,7 @@ pipeline {
     IMAGE_NAME = "touatifadwa/bibliotheque-auth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
-    KUBE_NAMESPACE = "bibliotheque2"
+    KUBE_NAMESPACE = "bibliotheque"
   }
 
   stages {
@@ -42,7 +42,6 @@ pipeline {
     stage('Docker Build') {
       steps {
         script {
-          // Build from root directory where Dockerfile is located
           sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f ./Dockerfile ."
         }
       }
@@ -63,19 +62,37 @@ pipeline {
       }
     }
 
+    stage('Prepare K3s Environment') {
+      steps {
+        script {
+          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+            sh '''
+              mkdir -p ~/.kube
+              cp $KUBECONFIG_FILE ~/.kube/config
+              chmod 600 ~/.kube/config
+              
+              if ! kubectl get namespace $KUBE_NAMESPACE >/dev/null 2>&1; then
+                kubectl create namespace $KUBE_NAMESPACE
+              fi
+            '''
+          }
+        }
+      }
+    }
+
     stage('Deploy to K3s') {
       steps {
         script {
-          try {
-            withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-              sh '''
-                kubectl config set-context --current --namespace="$KUBE_NAMESPACE"
-                kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
-                kubectl apply -f k8s/bibliotheque-auth-service.yaml
-              '''
-            }
-          } catch (Exception e) {
-            error "Deployment failed: ${e.getMessage()}"
+          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+            sh '''
+              mkdir -p ~/.kube
+              cp $KUBECONFIG_FILE ~/.kube/config
+              chmod 600 ~/.kube/config
+              
+              kubectl config set-context --current --namespace=$KUBE_NAMESPACE
+              kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
+              kubectl apply -f k8s/bibliotheque-auth-service.yaml
+            '''
           }
         }
       }
@@ -85,10 +102,14 @@ pipeline {
       steps {
         retry(3) {
           timeout(time: 3, unit: 'MINUTES') {
-            withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
+            withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
               sh '''
+                mkdir -p ~/.kube
+                cp $KUBECONFIG_FILE ~/.kube/config
+                chmod 600 ~/.kube/config
+                
                 kubectl rollout status deployment/bibliotheque-auth \
-                  --namespace="$KUBE_NAMESPACE" \
+                  --namespace=$KUBE_NAMESPACE \
                   --timeout=180s
               '''
             }
@@ -102,20 +123,21 @@ pipeline {
     failure {
       script {
         echo "Pipeline failed! Attempting rollback..."
-        try {
-          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-            sh '''
-              kubectl rollout undo deployment/bibliotheque-auth \
-                --namespace="$KUBE_NAMESPACE" || true
-            '''
-          }
-        } catch (Exception e) {
-          echo "Rollback failed: ${e.getMessage()}"
+        withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            mkdir -p ~/.kube
+            cp $KUBECONFIG_FILE ~/.kube/config
+            chmod 600 ~/.kube/config
+            
+            if kubectl get deployment bibliotheque-auth -n $KUBE_NAMESPACE >/dev/null 2>&1; then
+              kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
+            fi
+          '''
         }
       }
     }
     always {
-      sh 'docker logout "$REGISTRY" || true'
+      sh 'docker logout $REGISTRY || true'
       echo "Pipeline execution completed"
     }
   }
