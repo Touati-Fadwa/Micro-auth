@@ -43,7 +43,8 @@ pipeline {
       steps {
         script {
           dir('microservice-auth') {
-            sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+            // Assurer que le Dockerfile se trouve dans ce répertoire ou spécifier son chemin
+            sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile ."
           }
         }
       }
