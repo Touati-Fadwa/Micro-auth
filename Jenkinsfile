@@ -2,22 +2,22 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_USERNAME = credentials('docker-username') // ID dans Jenkins Credentials
-    DOCKER_PASSWORD = credentials('docker-password') // ID dans Jenkins Credentials
+    DOCKER_USERNAME = credentials('docker-username')
+    DOCKER_PASSWORD = credentials('docker-password')
     IMAGE_NAME = "bibliotheque-auth"
-    IMAGE_TAG = "latest"
+    IMAGE_TAG = "${env.BRANCH_NAME == 'main' ? 'latest' : env.BRANCH_NAME}"
     REGISTRY = "docker.io"
+    KUBE_NAMESPACE = "bibliotheque"
   }
 
   stages {
-
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
 
-    stage('Install') {
+    stage('Install Dependencies') {
       steps {
         dir('microservice-auth') {
           sh 'npm ci'
@@ -43,15 +43,18 @@ pipeline {
 
     stage('Docker Build & Push') {
       when {
-        expression { env.BRANCH_NAME == 'main' }
+        anyOf {
+          branch 'main'
+          branch 'dev'
+          expression { params.FORCE_DEPLOY == true }
+        }
       }
       steps {
         script {
-          docker.withRegistry("https://${env.REGISTRY}", '') {
+          docker.withRegistry("https://${env.REGISTRY}", 'docker-credentials') {
             sh """
-              echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
-              docker build -t ${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG} ./microservice-auth
-              docker push ${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}
+              docker build -t ${env.REGISTRY}/${env.DOCKER_USERNAME}/${env.IMAGE_NAME}:${env.IMAGE_TAG} ./microservice-auth
+              docker push ${env.REGISTRY}/${env.DOCKER_USERNAME}/${env.IMAGE_NAME}:${env.IMAGE_TAG}
             """
           }
         }
@@ -60,40 +63,79 @@ pipeline {
 
     stage('Deploy to K3s') {
       when {
-        expression { env.BRANCH_NAME == 'main' }
+        anyOf {
+          branch 'main'
+          branch 'dev'
+          expression { params.FORCE_DEPLOY == true }
+        }
       }
       steps {
         withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-          sh '''
-            kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
-            kubectl apply -f k8s/bibliotheque-auth-service.yaml
-          '''
+          dir('k8s') {
+            sh """
+              kubectl config set-context --current --namespace=${env.KUBE_NAMESPACE}
+              kubectl apply -f bibliotheque-auth-deployment.yaml
+              kubectl apply -f bibliotheque-auth-service.yaml
+            """
+          }
         }
       }
     }
 
     stage('Verify Deployment') {
       when {
-        expression { env.BRANCH_NAME == 'main' }
+        anyOf {
+          branch 'main'
+          branch 'dev'
+          expression { params.FORCE_DEPLOY == true }
+        }
       }
       steps {
-        sh 'kubectl rollout status deployment/bibliotheque-auth -n bibliotheque --timeout=180s'
+        retry(3) {
+          timeout(time: 3, unit: 'MINUTES') {
+            sh """
+              kubectl rollout status deployment/bibliotheque-auth \
+                --namespace=${env.KUBE_NAMESPACE} \
+                --timeout=180s
+            """
+          }
+        }
       }
     }
 
     stage('Rollback on Failure') {
       when {
-        expression { env.BRANCH_NAME == 'main' }
+        anyOf {
+          branch 'main'
+          branch 'dev'
+          expression { params.FORCE_DEPLOY == true }
+        }
+        expression { currentBuild.result == 'FAILURE' }
       }
       steps {
-        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-          sh '''
-            kubectl rollout undo deployment/bibliotheque-auth -n bibliotheque || true
-            echo "Deployment failed, rollback triggered"
-          '''
+        script {
+          echo "Rolling back deployment due to failure..."
+          sh """
+            kubectl rollout undo deployment/bibliotheque-auth \
+              --namespace=${env.KUBE_NAMESPACE} || true
+          """
         }
       }
     }
+  }
 
+  post {
+    always {
+      script {
+        echo "Cleaning up Docker credentials..."
+        sh 'docker logout ${env.REGISTRY} || true'
+      }
+    }
+    success {
+      echo "Pipeline executed successfully!"
+    }
+    failure {
+      echo "Pipeline failed!"
+    }
   }
 }
