@@ -2,8 +2,7 @@ pipeline {
   agent any
 
   environment {
-    DOCKER_USERNAME = credentials('docker-username')
-    DOCKER_PASSWORD = credentials('docker-password')
+    // Utilisation de credentials sécurisés
     IMAGE_NAME = "bibliotheque-auth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
@@ -43,12 +42,19 @@ pipeline {
 
     stage('Docker Build & Push') {
       steps {
-        script {
-          sh """
-            echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin ${REGISTRY}
-            docker build -t ${REGISTRY}/${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG} ./microservice-auth
-            docker push ${REGISTRY}/${DOCKER_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}
-          """
+        withCredentials([usernamePassword(
+          credentialsId: 'docker-credentials',
+          usernameVariable: 'DOCKER_USERNAME',
+          passwordVariable: 'DOCKER_PASSWORD'
+        )]) {
+          script {
+            // Méthode sécurisée pour le login Docker
+            sh '''
+              docker login -u $DOCKER_USERNAME --password-stdin $REGISTRY <<< "$DOCKER_PASSWORD"
+              docker build -t $REGISTRY/$DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_TAG ./microservice-auth
+              docker push $REGISTRY/$DOCKER_USERNAME/$IMAGE_NAME:$IMAGE_TAG
+            '''
+          }
         }
       }
     }
@@ -56,11 +62,11 @@ pipeline {
     stage('Deploy to K3s') {
       steps {
         withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-          sh """
-            kubectl config set-context --current --namespace=${KUBE_NAMESPACE}
+          sh '''
+            kubectl config set-context --current --namespace=$KUBE_NAMESPACE
             kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
             kubectl apply -f k8s/bibliotheque-auth-service.yaml
-          """
+          '''
         }
       }
     }
@@ -68,11 +74,13 @@ pipeline {
     stage('Verify Deployment') {
       steps {
         retry(3) {
-          sh """
-            kubectl rollout status deployment/bibliotheque-auth \
-              --namespace=${KUBE_NAMESPACE} \
-              --timeout=180s
-          """
+          timeout(time: 3, unit: 'MINUTES') {
+            sh '''
+              kubectl rollout status deployment/bibliotheque-auth \
+                --namespace=$KUBE_NAMESPACE \
+                --timeout=180s
+            '''
+          }
         }
       }
     }
@@ -83,15 +91,15 @@ pipeline {
       script {
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
-          sh """
+          sh '''
             kubectl rollout undo deployment/bibliotheque-auth \
-              --namespace=${KUBE_NAMESPACE} || true
-          """
+              --namespace=$KUBE_NAMESPACE || true
+          '''
         }
       }
     }
     always {
-      sh "docker logout ${REGISTRY} || true"
+      sh 'docker logout $REGISTRY || true'
     }
   }
 }
