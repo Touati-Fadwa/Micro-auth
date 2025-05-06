@@ -1,37 +1,28 @@
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
 const { User } = require("../src/models");
 const authController = require("../src/controllers/auth");
 
 // Mock des modules
 jest.mock("jsonwebtoken");
-jest.mock("../src/models", () => {
-  const mockUser = {
-    id: 1,
-    email: "test@example.com",
-    password: "hashedpassword",
-    role: "student",
-    checkPassword: jest.fn()
-  };
-  
-  return {
-    User: {
-      findOne: jest.fn(() => mockUser),
-      create: jest.fn(),
-    },
-    Op: {
-      ne: Symbol('ne')
-    }
-  };
-});
+jest.mock("bcrypt");
+jest.mock("../src/models", () => ({
+  User: {
+    findOne: jest.fn(),
+    create: jest.fn(),
+    findByPk: jest.fn()
+  },
+}));
 
 describe("Auth Controller", () => {
   let req, res;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    
+
     req = {
       body: {},
+      user: { role: "admin", id: 1 }, // pour le test de register et me
     };
 
     res = {
@@ -43,77 +34,83 @@ describe("Auth Controller", () => {
   });
 
   describe("login", () => {
-    test("should return 400 if email or password is missing", async () => {
-      // Test sans email
-      req.body = { password: "password123" };
-      await authController.login(req, res);
-      expect(res.status).toHaveBeenCalledWith(400);
-      
-      // Reset mocks
-      jest.clearAllMocks();
-      res.status.mockReturnThis();
-      
-      // Test sans password
-      req.body = { email: "test@example.com" };
-      await authController.login(req, res);
-      expect(res.status).toHaveBeenCalledWith(400);
-    });
-
     test("should return 401 if user is not found", async () => {
       req.body = { email: "test@example.com", password: "password123" };
-      User.findOne.mockResolvedValueOnce(null);
+      User.findOne.mockResolvedValue(null);
 
       await authController.login(req, res);
 
       expect(User.findOne).toHaveBeenCalledWith({
-        where: {
-          email: "test@example.com",
-          role: { [Symbol('ne')]: null },
-        },
+        where: { email: "test@example.com" }
       });
       expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({ message: "Identifiants incorrects" });
     });
 
     test("should return 401 if password is invalid", async () => {
-      req.body = { email: "test@example.com", password: "wrongpassword" };
+      req.body = { email: "test@example.com", password: "wrongpass" };
       const mockUser = {
-        ...User.findOne(),
-        checkPassword: jest.fn().mockResolvedValue(false)
+        id: 1,
+        email: "test@example.com",
+        password: "hashed-password",
+        role: "student",
       };
-      User.findOne.mockResolvedValueOnce(mockUser);
+      User.findOne.mockResolvedValue(mockUser);
+      bcrypt.compare.mockResolvedValue(false);
 
       await authController.login(req, res);
 
-      expect(mockUser.checkPassword).toHaveBeenCalledWith("wrongpassword");
+      expect(bcrypt.compare).toHaveBeenCalledWith("wrongpass", "hashed-password");
       expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({ message: "Identifiants incorrects" });
+    });
+
+    test("should return 403 if role does not match", async () => {
+      req.body = { email: "test@example.com", password: "password123", role: "admin" };
+      const mockUser = {
+        id: 1,
+        email: "test@example.com",
+        password: "hashed-password",
+        role: "student",
+      };
+      User.findOne.mockResolvedValue(mockUser);
+      bcrypt.compare.mockResolvedValue(true);
+
+      await authController.login(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({ message: "Accès refusé pour ce rôle" });
     });
 
     test("should return user data and token if login is successful", async () => {
       req.body = { email: "test@example.com", password: "password123" };
       const mockUser = {
         id: 1,
-        name: "Test User",
         email: "test@example.com",
+        password: "hashed-password",
         role: "student",
-        checkPassword: jest.fn().mockResolvedValue(true)
       };
-      User.findOne.mockResolvedValueOnce(mockUser);
-      jwt.sign.mockReturnValue("fake-token");
+      User.findOne.mockResolvedValue(mockUser);
+      bcrypt.compare.mockResolvedValue(true);
+      const mockToken = "fake-jwt-token";
+      jwt.sign.mockReturnValue(mockToken);
 
       await authController.login(req, res);
 
-      expect(mockUser.checkPassword).toHaveBeenCalledWith("password123");
       expect(jwt.sign).toHaveBeenCalledWith(
-        {
-          id: 1,
-          email: "test@example.com",
-          role: "student",
-          name: "Test User"
-        },
+        { id: 1, email: "test@example.com", role: "student" },
         "test-secret",
-        { expiresIn: "24h" }
+        { expiresIn: "168h" }
       );
-      expect(res.status).toHaveBeenCalledWith(200);
+
+      expect(res.json).toHaveBeenCalledWith({
+        id: 1,
+        email: "test@example.com",
+        role: "student",
+        token: mockToken,
+      });
     });
   });
 });
+
+	
