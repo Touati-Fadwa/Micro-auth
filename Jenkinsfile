@@ -5,7 +5,7 @@ pipeline {
     IMAGE_NAME = "touatifadwa/bibliotheque-auth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
-    KUBE_NAMESPACE = "bibliotheque"
+    KUBE_NAMESPACE = "bibliotheque2"
   }
 
   stages {
@@ -70,8 +70,8 @@ pipeline {
             withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG')]) {
               sh '''
                 kubectl config set-context --current --namespace="$KUBE_NAMESPACE"
-                kubectl apply -f microservice-auth/k8s/bibliotheque-auth-deployment.yaml
-                kubectl apply -f microservice-auth/k8s/bibliotheque-auth-service.yaml
+                kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
+                kubectl apply -f k8s/bibliotheque-auth-service.yaml
               '''
             }
           } catch (Exception e) {
