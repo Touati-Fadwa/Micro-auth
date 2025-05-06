@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const { User } = require("../src/models");
 const authController = require("../src/controllers/auth");
 
+
 // Mock des modules
 jest.mock("jsonwebtoken");
 jest.mock("bcrypt");
@@ -13,6 +14,7 @@ jest.mock("../src/models", () => ({
     findByPk: jest.fn()
   },
 }));
+
 
 describe("Auth Controller", () => {
   let req, res;
