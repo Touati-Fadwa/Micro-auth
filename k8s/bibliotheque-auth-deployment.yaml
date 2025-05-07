@@ -8,11 +8,6 @@ spec:
   selector:
     matchLabels:
       app: bibliotheque-auth
-  strategy:
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
-    type: RollingUpdate
   template:
     metadata:
       labels:
@@ -20,14 +15,12 @@ spec:
     spec:
       containers:
       - name: auth
-        image: touatifadwa/bibliotheque-auth:latest  # Image fixe plutôt que variable
+        image: ${DOCKER_USERNAME}/bibliotheque-auth:${IMAGE_TAG}
         ports:
         - containerPort: 3002
         env:
         - name: PORT
           value: "3002"
-        - name: NODE_ENV
-          value: "production"
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
@@ -62,38 +55,14 @@ spec:
           value: "true"
         resources:
           limits:
-            cpu: "0.5"  # Augmenté pour plus de stabilité
-            memory: "512Mi"
-          requests:
-            cpu: "0.2"
+            cpu: "0.3"
             memory: "256Mi"
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: 3002
-          initialDelaySeconds: 30  # Délai plus long pour le démarrage
-          periodSeconds: 10
-          failureThreshold: 3
+          requests:
+            cpu: "0.1"
+            memory: "128Mi"
         readinessProbe:
           httpGet:
             path: /api/health
             port: 3002
           initialDelaySeconds: 15
-          periodSeconds: 5  # Vérification plus fréquente
-          successThreshold: 1
-          failureThreshold: 3
-        startupProbe:
-          httpGet:
-            path: /api/health
-            port: 3002
-          failureThreshold: 30  # 30 tentatives
-          periodSeconds: 5  # Toutes les 5 secondes
-        volumeMounts:
-        - name: logs-volume
-          mountPath: /app/logs
-      volumes:
-      - name: logs-volume
-        emptyDir: {}
-      restartPolicy: Always
-      imagePullSecrets:
-      - name: dockerhub-creds  # À créer si nécessaire pour l'accès privé
+          periodSeconds: 10
