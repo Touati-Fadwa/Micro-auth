@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: auth
-        image: ${DOCKER_USERNAME}/bibliotheque-auth:${IMAGE_TAG}
+        image: touatifadwa/bibliotheque-auth:latest
         ports:
         - containerPort: 3002
         env:
@@ -64,5 +64,5 @@ spec:
           httpGet:
             path: /api/health
             port: 3002
-          initialDelaySeconds: 15
-          periodSeconds: 10
+          initialDelaySeconds: 30
+          periodSeconds: 20
