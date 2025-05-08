@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = "touatifadwa/bibliotheque-auth"
+    IMAGE_NAME = "touatifadwa/bibliotheque-MicroAuth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
@@ -135,7 +135,7 @@ pipeline {
             sh '''
               # Verify deployment status
               kubectl wait --for=condition=available \
-                --timeout=500s \
+                --timeout=800s \
                 deployment/bibliotheque-auth \
                 -n $KUBE_NAMESPACE
               
