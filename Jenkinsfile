@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME = "touatifadwa/bibliotheque-MicroAuth"
+    IMAGE_NAME = "touatifadwa/bibliotheque-microauth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"

@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: auth
-        image: touatifadwa/bibliotheque-MicroAuth:latest
+        image: touatifadwa/bibliotheque-microauth:latest
         ports:
         - containerPort: 3002
         env:
