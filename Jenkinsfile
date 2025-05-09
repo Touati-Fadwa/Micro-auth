@@ -96,7 +96,6 @@ pipeline {
             sh '''
               mkdir -p ~/.kube
               cp $KUBECONFIG_FILE ~/.kube/config
-              sed -i 's/127.0.0.1/192.168.1.114/g' ~/.kube/config
               chmod 600 ~/.kube/config
               
               # Test connection
