@@ -92,12 +92,17 @@ pipeline {
        stage('Configure K3s Access') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
             sh '''
-              mkdir -p ~/.kube
-              cp $KUBECONFIG_FILE ~/.kube/config
-              chmod 600 ~/.kube/config
-              
+              # Création du dossier .kube si inexistant
+                mkdir -p ~/.kube
+          
+              # Écriture du contenu secret dans le fichier config
+                echo "$KUBECONFIG" > ~/.kube/config
+          
+              # Correction des permissions
+                 chmod 600 ~/.kube/config
+                 
               # Test connection
               kubectl get nodes
               kubectl cluster-info
