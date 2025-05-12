@@ -123,15 +123,11 @@ pipeline {
     stage('Deploy to K3s') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
             sh '''
-              
-              
-              # Appliquer les configurations
+              kubectl config set-context --current --namespace=$KUBE_NAMESPACE
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
               kubectl apply -f k8s/bibliotheque-auth-service.yaml
-              
-              
             '''
           }
         }
@@ -141,31 +137,29 @@ pipeline {
     stage('Verify Deployment') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
             sh '''
-              # Configurer l'accès
-              export KUBECONFIG="${KUBECONFIG_FILE}.tmp"
+              # Verify deployment status
+              kubectl wait --for=condition=available \
+                --timeout=800s \
+                deployment/bibliotheque-auth \
+                -n $KUBE_NAMESPACE
               
+              # Display deployment information
               echo "=== Deployment Status ==="
-              kubectl get deploy -n ${KUBE_NAMESPACE} -o wide
+              kubectl get deploy -n $KUBE_NAMESPACE
               
               echo "=== Service Details ==="
-              kubectl get svc -n ${KUBE_NAMESPACE}
+              kubectl get svc -n $KUBE_NAMESPACE
               
               echo "=== Pods Status ==="
-              kubectl get pods -n ${KUBE_NAMESPACE} -o wide
+              kubectl get pods -n $KUBE_NAMESPACE
               
-              # Générer l'URL d'accès
-              echo "=== Access Information ==="
+              # Generate access URL
+              echo "Application accessible via:"
               NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-              NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "NOT_AVAILABLE")
-              
-              if [ "${NODE_PORT}" != "NOT_AVAILABLE" ]; then
-                echo "Application accessible at: http://${NODE_IP}:${NODE_PORT}"
-              else
-                echo "Service not ready - check with: kubectl get svc -n ${KUBE_NAMESPACE}"
-                kubectl describe svc bibliotheque-auth-service -n ${KUBE_NAMESPACE} || true
-              fi
+              NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
+              echo "http://$NODE_IP:$NODE_PORT"
             '''
           }
         }
@@ -174,25 +168,22 @@ pipeline {
   }
 
   post {
-    always {
-      sh '''
-        docker logout ${REGISTRY} || true
-        rm -f "${KUBECONFIG_FILE}.tmp" || true
-      '''
-      echo "Pipeline execution completed"
-    }
     failure {
       script {
         echo "Pipeline failed! Attempting rollback..."
-        withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
+        withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
           sh '''
-            export KUBECONFIG="${KUBECONFIG_FILE}.tmp"
-            echo "!!! Rolling back deployment !!!"
-            kubectl rollout undo deployment/bibliotheque-auth -n ${KUBE_NAMESPACE} || true
-            kubectl rollout status deployment/bibliotheque-auth -n ${KUBE_NAMESPACE} || true
+            echo "!!! Deployment failed - Initiating rollback !!!"
+            kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE
+            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s
+            echo "Rollback to previous version completed"
           '''
         }
       }
+    }
+    always {
+      sh 'docker logout $REGISTRY || true'
+      echo "Pipeline execution completed"
     }
   }
 }
