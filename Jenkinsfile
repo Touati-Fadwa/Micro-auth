@@ -75,17 +75,17 @@ pipeline {
             )
           ]) {
             sh '''
-              # Copier le fichier kubeconfig
+              # Configure kubectl access
               mkdir -p ~/.kube
               cp "$KUBECONFIG_FILE" ~/.kube/config
               chmod 600 ~/.kube/config
 
-              # Remplacer les placeholders
+              # Replace placeholders in secrets file
               sed -i "s/{{JWT_SECRET}}/$JWT_SECRET/g" k8s/secrets.yaml
               sed -i "s/{{DB_USER}}/$DB_USER/g" k8s/secrets.yaml
               sed -i "s/{{DB_PASSWORD}}/$DB_PASSWORD/g" k8s/secrets.yaml
               
-              # Appliquer les secrets
+              # Apply secrets
               kubectl apply -f k8s/secrets.yaml -n $KUBE_NAMESPACE
             '''
           }
@@ -98,24 +98,17 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Création du dossier .kube si inexistant
+              # Configure kubectl access
               mkdir -p ~/.kube
-          
-              # Copier le fichier de configuration
               cp "$KUBECONFIG_FILE" ~/.kube/config
-          
-              # Correction des permissions
               chmod 600 ~/.kube/config
 
               # Test connection
               kubectl get nodes
               kubectl cluster-info
-              kubectl get componentstatuses
               
               # Create namespace if not exists
-              if ! kubectl get namespace $KUBE_NAMESPACE >/dev/null 2>&1; then
-                kubectl create namespace $KUBE_NAMESPACE
-              fi
+              kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
             '''
           }
         }
@@ -127,12 +120,15 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Configurer l'accès
+              # Configure kubectl access
               mkdir -p ~/.kube
               cp "$KUBECONFIG_FILE" ~/.kube/config
               chmod 600 ~/.kube/config
 
+              # Set namespace context
               kubectl config set-context --current --namespace=$KUBE_NAMESPACE
+              
+              # Apply deployment and service
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
               kubectl apply -f k8s/bibliotheque-auth-service.yaml
             '''
@@ -146,7 +142,7 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Configurer l'accès
+              # Configure kubectl access
               mkdir -p ~/.kube
               cp "$KUBECONFIG_FILE" ~/.kube/config
               chmod 600 ~/.kube/config
@@ -185,7 +181,7 @@ pipeline {
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            # Configurer l'accès
+            # Configure kubectl access
             mkdir -p ~/.kube
             cp "$KUBECONFIG_FILE" ~/.kube/config
             chmod 600 ~/.kube/config
