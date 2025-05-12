@@ -67,7 +67,7 @@ pipeline {
   steps {
     script {
       withCredentials([
-        file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE'),
+        string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG'),
         string(credentialsId: 'JWT_SECRET_CREDENTIALS', variable: 'JWT_SECRET'),
         usernamePassword(
           credentialsId: 'DB_CREDENTIALS',
@@ -102,7 +102,7 @@ pipeline {
           
               # Correction des permissions
                  chmod 600 ~/.kube/config
-                 
+
               # Test connection
               kubectl get nodes
               kubectl cluster-info
@@ -121,7 +121,7 @@ pipeline {
     stage('Deploy to K3s') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
             sh '''
               kubectl config set-context --current --namespace=$KUBE_NAMESPACE
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
@@ -135,7 +135,7 @@ pipeline {
     stage('Verify Deployment') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
             sh '''
               # Verify deployment status
               kubectl wait --for=condition=available \
@@ -169,7 +169,7 @@ pipeline {
     failure {
       script {
         echo "Pipeline failed! Attempting rollback..."
-        withCredentials([file(credentialsId: 'kubeconfig-k3s', variable: 'KUBECONFIG_FILE')]) {
+        withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
           sh '''
             echo "!!! Deployment failed - Initiating rollback !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE
