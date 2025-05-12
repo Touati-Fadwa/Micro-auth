@@ -125,13 +125,16 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              
+              # Configurer l'accès
+              export KUBECONFIG="${KUBECONFIG_FILE}.tmp"
               
               # Appliquer les configurations
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
               kubectl apply -f k8s/bibliotheque-auth-service.yaml
               
-              
+              # Attendre le déploiement
+              kubectl rollout status deployment/bibliotheque-auth -n ${KUBE_NAMESPACE} --timeout=300s
+            '''
           }
         }
       }
@@ -142,6 +145,8 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
+              # Configurer l'accès
+              export KUBECONFIG="${KUBECONFIG_FILE}.tmp"
               
               echo "=== Deployment Status ==="
               kubectl get deploy -n ${KUBE_NAMESPACE} -o wide
