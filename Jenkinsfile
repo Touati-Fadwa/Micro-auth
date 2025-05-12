@@ -6,7 +6,7 @@ pipeline {
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
-    KUBECONFIG_PATH = "${env.WORKSPACE}/kubeconfig"  // Chemin unique pour chaque build
+    KUBECONFIG_PATH = "${env.WORKSPACE}/kubeconfig"
   }
 
   stages {
@@ -74,15 +74,12 @@ pipeline {
               passwordVariable: 'DB_PASSWORD'
             )
           ]) {
-            sh """
-              # Remplacer les placeholders
+            sh '''
               sed -i "s/{{JWT_SECRET}}/${JWT_SECRET}/g" k8s/secrets.yaml
               sed -i "s/{{DB_USER}}/${DB_USER}/g" k8s/secrets.yaml
               sed -i "s/{{DB_PASSWORD}}/${DB_PASSWORD}/g" k8s/secrets.yaml
-              
-              # Appliquer les secrets
               kubectl apply -f k8s/secrets.yaml --kubeconfig=${KUBECONFIG_PATH}
-            """
+            '''
           }
         }
       }
@@ -93,20 +90,20 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'K3S_CONFIG_FILE')]) {
             sh """
-              # Création du fichier kubeconfig
               mkdir -p ${env.WORKSPACE}
               cp "${K3S_CONFIG_FILE}" "${KUBECONFIG_PATH}"
               chmod 600 "${KUBECONFIG_PATH}"
               
-              # Vérification de la connexion
-              echo "=== Vérification du cluster ==="
-              kubectl --kubeconfig=${KUBECONFIG_PATH} cluster-info || { echo "Échec de connexion au cluster"; exit 1; }
+              if ! kubectl --kubeconfig=${KUBECONFIG_PATH} cluster-info; then
+                echo "ERREUR: Impossible de se connecter au cluster"
+                exit 1
+              fi
               
-              # Création du namespace si nécessaire
               kubectl --kubeconfig=${KUBECONFIG_PATH} create namespace ${KUBE_NAMESPACE} --dry-run=client -o yaml | kubectl --kubeconfig=${KUBECONFIG_PATH} apply -f -
               
-              # Vérification des ressources
-              echo "=== Nodes disponibles ==="
+              echo "=== Information du cluster ==="
+              kubectl --kubeconfig=${KUBECONFIG_PATH} cluster-info
+              echo "=== Noeuds disponibles ==="
               kubectl --kubeconfig=${KUBECONFIG_PATH} get nodes
             """
           }
@@ -119,11 +116,9 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'K3S_CONFIG_FILE')]) {
             sh """
-              # Déploiement avec validation forcée
               kubectl --kubeconfig=${KUBECONFIG_PATH} apply -f k8s/bibliotheque-auth-deployment.yaml --validate=false
               kubectl --kubeconfig=${KUBECONFIG_PATH} apply -f k8s/bibliotheque-auth-service.yaml --validate=false
               
-              # Attente du déploiement
               kubectl --kubeconfig=${KUBECONFIG_PATH} rollout status deployment/bibliotheque-auth -n ${KUBE_NAMESPACE} --timeout=600s
             """
           }
@@ -136,27 +131,23 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'K3S_CONFIG_FILE')]) {
             sh """
-              # Vérification complète
-              echo "=== État du déploiement ==="
+              echo "=== Statut du déploiement ==="
               kubectl --kubeconfig=${KUBECONFIG_PATH} get deploy -n ${KUBE_NAMESPACE} -o wide
               
               echo "=== Détails du service ==="
               kubectl --kubeconfig=${KUBECONFIG_PATH} get svc -n ${KUBE_NAMESPACE}
-              kubectl --kubeconfig=${KUBECONFIG_PATH} describe svc bibliotheque-auth-service -n ${KUBE_NAMESPACE} || true
               
               echo "=== Logs des pods ==="
-              kubectl --kubeconfig=${KUBECONFIG_PATH} logs -n ${KUBE_NAMESPACE} -l app=bibliotheque-auth --tail=50 || true
+              kubectl --kubeconfig=${KUBECONFIG_PATH} logs -n ${KUBE_NAMESPACE} -l app=bibliotheque-auth --tail=50 || echo "Impossible d'accéder aux logs"
               
-              # Test de connectivité
-              NODE_IP=$(kubectl --kubeconfig=${KUBECONFIG_PATH} get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-              NODE_PORT=$(kubectl --kubeconfig=${KUBECONFIG_PATH} get svc bibliotheque-auth-service -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "NON_DISPONIBLE")
+              NODE_IP=\$(kubectl --kubeconfig=${KUBECONFIG_PATH} get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+              NODE_PORT=\$(kubectl --kubeconfig=${KUBECONFIG_PATH} get svc bibliotheque-auth-service -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "NON_DISPONIBLE")
               
-              if [ "${NODE_PORT}" != "NON_DISPONIBLE" ]; then
-                echo "Application accessible à: http://${NODE_IP}:${NODE_PORT}"
-                echo "Test de santé:"
-                curl -I "http://${NODE_IP}:${NODE_PORT}/health" --connect-timeout 5 || echo "Le service ne répond pas"
+              if [ "\${NODE_PORT}" != "NON_DISPONIBLE" ]; then
+                echo "Application accessible à: http://\${NODE_IP}:\${NODE_PORT}"
+                curl -I "http://\${NODE_IP}:\${NODE_PORT}/health" --connect-timeout 5 || echo "Le service ne répond pas encore"
               else
-                echo "Service non prêt"
+                echo "Service non encore disponible"
               fi
             """
           }
@@ -168,7 +159,6 @@ pipeline {
   post {
     always {
       sh """
-        # Nettoyage
         docker logout ${REGISTRY} || true
         rm -f "${KUBECONFIG_PATH}" || true
       """
