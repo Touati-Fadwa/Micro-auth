@@ -74,12 +74,9 @@ pipeline {
             )
           ]) {
             sh '''
-              # Remplacer les placeholders
-              sed -i "s/{{JWT_SECRET}}/$JWT_SECRET/g" k8s/secrets.yaml
-              sed -i "s/{{DB_USER}}/$DB_USER/g" k8s/secrets.yaml
-              sed -i "s/{{DB_PASSWORD}}/$DB_PASSWORD/g" k8s/secrets.yaml
-              
-              # Appliquer les secrets
+              sed -i "s/{{JWT_SECRET}}/${JWT_SECRET}/g" k8s/secrets.yaml
+              sed -i "s/{{DB_USER}}/${DB_USER}/g" k8s/secrets.yaml
+              sed -i "s/{{DB_PASSWORD}}/${DB_PASSWORD}/g" k8s/secrets.yaml
               kubectl apply -f k8s/secrets.yaml
             '''
           }
@@ -90,25 +87,21 @@ pipeline {
     stage('Configure K3s Access') {
       steps {
         script {
-          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_CONTENT')]) {
             sh '''
-              # Création du dossier .kube si inexistant
+              # Création du fichier kubeconfig
               mkdir -p ~/.kube
-          
-              # Écriture du contenu secret dans le fichier config
-              echo "$KUBECONFIG" > ~/.kube/config
-          
-              # Correction des permissions
+              cat <<EOF > ~/.kube/config
+              ${KUBECONFIG_CONTENT}
+              EOF
               chmod 600 ~/.kube/config
 
-              # Test connection
-              kubectl get nodes
+              # Vérification
+              kubectl config view --minify
               kubectl cluster-info
               
-              # Create namespace if not exists
-              if ! kubectl get namespace $KUBE_NAMESPACE >/dev/null 2>&1; then
-                kubectl create namespace $KUBE_NAMESPACE
-              fi
+              # Création du namespace si inexistant
+              kubectl get namespace ${KUBE_NAMESPACE} || kubectl create namespace ${KUBE_NAMESPACE}
             '''
           }
         }
@@ -118,13 +111,17 @@ pipeline {
     stage('Deploy to K3s') {
       steps {
         script {
-          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_CONTENT')]) {
             sh '''
-              # Régénérer le fichier config au cas où
-              echo "$KUBECONFIG" > ~/.kube/config
+              # Régénération du kubeconfig
+              mkdir -p ~/.kube
+              cat <<EOF > ~/.kube/config
+              ${KUBECONFIG_CONTENT}
+              EOF
               chmod 600 ~/.kube/config
-              
-              kubectl config set-context --current --namespace=$KUBE_NAMESPACE
+
+              # Déploiement
+              kubectl config set-context --current --namespace=${KUBE_NAMESPACE}
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
               kubectl apply -f k8s/bibliotheque-auth-service.yaml
             '''
@@ -136,33 +133,35 @@ pipeline {
     stage('Verify Deployment') {
       steps {
         script {
-          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_CONTENT')]) {
             sh '''
-              # Régénérer le fichier config
-              echo "$KUBECONFIG" > ~/.kube/config
+              # Régénération du kubeconfig
+              mkdir -p ~/.kube
+              cat <<EOF > ~/.kube/config
+              ${KUBECONFIG_CONTENT}
+              EOF
               chmod 600 ~/.kube/config
-              
-              # Verify deployment status
+
+              # Vérification
               kubectl wait --for=condition=available \
-                --timeout=800s \
+                --timeout=300s \
                 deployment/bibliotheque-auth \
-                -n $KUBE_NAMESPACE
-              
-              # Display deployment information
+                -n ${KUBE_NAMESPACE}
+
               echo "=== Deployment Status ==="
-              kubectl get deploy -n $KUBE_NAMESPACE
+              kubectl get deploy -n ${KUBE_NAMESPACE}
               
               echo "=== Service Details ==="
-              kubectl get svc -n $KUBE_NAMESPACE
+              kubectl get svc -n ${KUBE_NAMESPACE}
               
               echo "=== Pods Status ==="
-              kubectl get pods -n $KUBE_NAMESPACE
+              kubectl get pods -n ${KUBE_NAMESPACE}
               
-              # Generate access URL
+              # Génération URL
               echo "Application accessible via:"
               NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-              NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
-              echo "http://$NODE_IP:$NODE_PORT"
+              NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n ${KUBE_NAMESPACE} -o jsonpath='{.spec.ports[0].nodePort}')
+              echo "http://${NODE_IP}:${NODE_PORT}"
             '''
           }
         }
@@ -174,21 +173,24 @@ pipeline {
     failure {
       script {
         echo "Pipeline failed! Attempting rollback..."
-        withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+        withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_CONTENT')]) {
           sh '''
-            echo "$KUBECONFIG" > ~/.kube/config
+            # Régénération du kubeconfig
+            mkdir -p ~/.kube
+            cat <<EOF > ~/.kube/config
+            ${KUBECONFIG_CONTENT}
+            EOF
             chmod 600 ~/.kube/config
-            
-            echo "!!! Deployment failed - Initiating rollback !!!"
-            kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE
-            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s
-            echo "Rollback to previous version completed"
+
+            echo "!!! Rollback initiated !!!"
+            kubectl rollout undo deployment/bibliotheque-auth -n ${KUBE_NAMESPACE}
+            kubectl rollout status deployment/bibliotheque-auth -n ${KUBE_NAMESPACE}
           '''
         }
       }
     }
     always {
-      sh 'docker logout $REGISTRY || true'
+      sh 'docker logout ${REGISTRY} || true'
       sh 'rm -f ~/.kube/config || true'
       echo "Pipeline execution completed"
     }
