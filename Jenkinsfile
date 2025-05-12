@@ -62,46 +62,50 @@ pipeline {
       }
     }
 
-
     stage('Create Kubernetes Secrets') {
-  steps {
-    script {
-      withCredentials([
-        string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG'),
-        string(credentialsId: 'JWT_SECRET_CREDENTIALS', variable: 'JWT_SECRET'),
-        usernamePassword(
-          credentialsId: 'DB_CREDENTIALS',
-          usernameVariable: 'DB_USER',
-          passwordVariable: 'DB_PASSWORD'
-        )
-      ]) {
-        sh '''
-          # Remplacer les placeholders
-          sed -i "s/{{JWT_SECRET}}/$JWT_SECRET/g" k8s/secrets.yaml
-          sed -i "s/{{DB_USER}}/$DB_USER/g" k8s/secrets.yaml
-          sed -i "s/{{DB_PASSWORD}}/$DB_PASSWORD/g" k8s/secrets.yaml
-          
-          # Appliquer les secrets
-          kubectl apply -f k8s/secrets.yaml
-        '''
-      }
-    }
-  }
-}
-
-       stage('Configure K3s Access') {
       steps {
         script {
-          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+          withCredentials([
+            file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
+            string(credentialsId: 'JWT_SECRET_CREDENTIALS', variable: 'JWT_SECRET'),
+            usernamePassword(
+              credentialsId: 'DB_CREDENTIALS',
+              usernameVariable: 'DB_USER',
+              passwordVariable: 'DB_PASSWORD'
+            )
+          ]) {
+            sh '''
+              # Copier le fichier kubeconfig
+              mkdir -p ~/.kube
+              cp "$KUBECONFIG_FILE" ~/.kube/config
+              chmod 600 ~/.kube/config
+
+              # Remplacer les placeholders
+              sed -i "s/{{JWT_SECRET}}/$JWT_SECRET/g" k8s/secrets.yaml
+              sed -i "s/{{DB_USER}}/$DB_USER/g" k8s/secrets.yaml
+              sed -i "s/{{DB_PASSWORD}}/$DB_PASSWORD/g" k8s/secrets.yaml
+              
+              # Appliquer les secrets
+              kubectl apply -f k8s/secrets.yaml -n $KUBE_NAMESPACE
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Configure K3s Access') {
+      steps {
+        script {
+          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
               # Création du dossier .kube si inexistant
-                mkdir -p ~/.kube
+              mkdir -p ~/.kube
           
-              # Écriture du contenu secret dans le fichier config
-                echo "$KUBECONFIG" > ~/.kube/config
+              # Copier le fichier de configuration
+              cp "$KUBECONFIG_FILE" ~/.kube/config
           
               # Correction des permissions
-                 chmod 600 ~/.kube/config
+              chmod 600 ~/.kube/config
 
               # Test connection
               kubectl get nodes
@@ -121,8 +125,13 @@ pipeline {
     stage('Deploy to K3s') {
       steps {
         script {
-          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
+              # Configurer l'accès
+              mkdir -p ~/.kube
+              cp "$KUBECONFIG_FILE" ~/.kube/config
+              chmod 600 ~/.kube/config
+
               kubectl config set-context --current --namespace=$KUBE_NAMESPACE
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml
               kubectl apply -f k8s/bibliotheque-auth-service.yaml
@@ -135,8 +144,13 @@ pipeline {
     stage('Verify Deployment') {
       steps {
         script {
-          withCredentials([string(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
+              # Configurer l'accès
+              mkdir -p ~/.kube
+              cp "$KUBECONFIG_FILE" ~/.kube/config
+              chmod 600 ~/.kube/config
+
               # Verify deployment status
               kubectl wait --for=condition=available \
                 --timeout=800s \
@@ -169,11 +183,16 @@ pipeline {
     failure {
       script {
         echo "Pipeline failed! Attempting rollback..."
-        withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG')]) {
+        withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
+            # Configurer l'accès
+            mkdir -p ~/.kube
+            cp "$KUBECONFIG_FILE" ~/.kube/config
+            chmod 600 ~/.kube/config
+
             echo "!!! Deployment failed - Initiating rollback !!!"
-            kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE
-            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s
+            kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
+            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
             echo "Rollback to previous version completed"
           '''
         }
