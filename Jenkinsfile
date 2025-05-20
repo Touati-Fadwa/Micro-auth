@@ -183,8 +183,7 @@ pipeline {
                   echo "Installation de la stack Prometheus..."
                   helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
                       --namespace monitoring \
-                      --version 55.7.1 \ 
-                      --set kubeEtcd.enabled=false \  
+                      --version 45.7.1 \
                       --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
                       --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
                       --set prometheus.service.type=NodePort \
