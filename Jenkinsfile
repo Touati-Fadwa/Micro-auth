@@ -183,7 +183,7 @@ pipeline {
                   echo "Installation de la stack Prometheus..."
                   helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
                       --namespace monitoring \
-                      --version 48.1.1 \
+                      --version 45.7.1 \
                       --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
                       --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
                       --set prometheus.service.type=NodePort \
@@ -253,9 +253,49 @@ data:
       }
     }
 
-    
+    // Nouvelle étape pour le guide K9s
+    stage('K9s Guide') {
+      steps {
+        script {
+          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
+            sh '''
+                # Récupération des informations d'accès
+                NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                API_GATEWAY_PORT=$(kubectl get svc bibliotheque-api-gateway-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
+            '''
+            
+            echo """
+## Guide pour utiliser K9s avec K3s
 
+1. Installer K9s: https://k9scli.io/
+2. Configurer K9s:
+   export KUBECONFIG=~/.kube/config
+3. Lancer K9s: 
+   k9s --namespace ${KUBE_NAMESPACE}
 
+Commandes utiles:
+- :deploy    - Voir les déploiements
+- :svc       - Voir les services
+- :pod       - Voir les pods
+- Ctrl+d     - Supprimer une ressource
+- Ctrl+k     - Tuer un pod
+- d          - Décrire une ressource
+- l          - Voir les logs
+- :ns        - Changer de namespace
+
+Accès aux services:
+- API Gateway:  http://${sh(returnStdout: true, script: 'echo $NODE_IP').trim()}:${sh(returnStdout: true, script: 'echo $API_GATEWAY_PORT').trim()}
+- Grafana:      http://${sh(returnStdout: true, script: 'echo $NODE_IP').trim()}:30300
+- Prometheus:   http://${sh(returnStdout: true, script: 'echo $NODE_IP').trim()}:30900
+
+Astuce: Pour tous les namespaces:
+   k9s --all-namespaces
+"""
+          }
+        }
+      }
+    }
+  }
 
   post {
     failure {
