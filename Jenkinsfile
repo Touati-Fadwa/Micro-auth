@@ -63,36 +63,7 @@ pipeline {
       }
     }
 
-    stage('Create Kubernetes Secrets') {
-      steps {
-        script {
-          withCredentials([
-            file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
-            string(credentialsId: 'JWT_SECRET_CREDENTIALS', variable: 'JWT_SECRET'),
-            usernamePassword(
-              credentialsId: 'DB_CREDENTIALS',
-              usernameVariable: 'DB_USER',
-              passwordVariable: 'DB_PASSWORD'
-            )
-          ]) {
-            sh '''
-              # Configure kubectl access
-              mkdir -p ~/.kube
-              cp "$KUBECONFIG_FILE" ~/.kube/config
-              chmod 600 ~/.kube/config
-
-              # Replace placeholders in secrets file
-              sed -i "s/{{JWT_SECRET}}/$JWT_SECRET/g" k8s/secrets.yaml
-              sed -i "s/{{DB_USER}}/$DB_USER/g" k8s/secrets.yaml
-              sed -i "s/{{DB_PASSWORD}}/$DB_PASSWORD/g" k8s/secrets.yaml
-              
-              # Apply secrets
-              kubectl apply -f k8s/secrets.yaml -n $KUBE_NAMESPACE
-            '''
-          }
-        }
-      }
-    }
+   
 
     stage('Configure K3s Access') {
       steps {
@@ -123,7 +94,7 @@ pipeline {
             sh '''
              # Commande simplifiée avec le namespace directement spécifié
                kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
-               kubectl apply -f k8s/bibliotheque-auth-service.yaml -n bibliotheque
+               
              '''
           }
         }
