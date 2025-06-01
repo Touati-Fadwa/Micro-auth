@@ -133,9 +133,6 @@ pipeline {
                   # Création du namespace monitoring
                   kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
                   
-                  
-                  
-                  
                   echo "Installation de la stack Prometheus..."
                   helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
                       --namespace monitoring \
@@ -148,7 +145,12 @@ pipeline {
                       --set grafana.service.type=NodePort \
                       --set grafana.service.nodePort=30300 \
                       --wait --timeout 5m
-                  
+
+
+                               echo "🔍 LIENS MONITORING :"
+                      NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                      echo "Prometheus: http://$NODE_IP:30900"
+                      echo "Grafana:    http://$NODE_IP:30300"
                   
               '''
               
@@ -210,10 +212,7 @@ data:
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            # Configure kubectl access
-            mkdir -p ~/.kube
-            cp "$KUBECONFIG_FILE" ~/.kube/config
-            chmod 600 ~/.kube/config
+            
 
             echo "!!! Deployment failed - Initiating rollback !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
