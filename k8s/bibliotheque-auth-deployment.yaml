@@ -17,7 +17,7 @@ spec:
       - name: auth
         image: touatifadwa/bibliotheque-microauth:latest
         ports:
-        - containerPort: 3003
+        - containerPort: 3002
         env:
         - name: PORT
           value: "3003"
@@ -63,7 +63,7 @@ spec:
         readinessProbe:
           httpGet:
             path: /api/health
-            port: 3003
+            port: 3002
           initialDelaySeconds: 30
           periodSeconds: 20
 ---
@@ -75,8 +75,8 @@ metadata:
 spec:
   type: NodePort
   ports:
-  - port: 3003
-    targetPort: 3003
+  - port: 3002
+    targetPort: 3002
     nodePort: 30082
   selector:
     app: bibliotheque-auth
