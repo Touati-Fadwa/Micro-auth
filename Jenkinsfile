@@ -6,6 +6,7 @@ pipeline {
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
+    PROMETHEUS_VERSION = "v0.12.0" // Version stable de kube-prometheus
   }
 
   stages {
@@ -114,24 +115,33 @@ pipeline {
       steps {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
-            sh '''
-              # Installation simple de Prometheus sans Helm
-              kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-              kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/main/manifests/setup/prometheus-operator-0servicemonitorCustomResourceDefinition.yaml
-              kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/main/manifests/setup/prometheus-operator-0prometheusruleCustomResourceDefinition.yaml
-              
-              # Installation des composants de base
-              kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/main/manifests/setup/
-              kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/main/manifests/
-              
-              # Exposition des services
-              kubectl patch svc prometheus-k8s -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"nodePort": 30900, "port": 9090, "targetPort": 9090}]}}'
-              kubectl patch svc grafana -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"nodePort": 30300, "port": 3000, "targetPort": 3000}]}}'
-              
-              echo "Monitoring installed:"
-              echo "Prometheus: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30900"
-              echo "Grafana: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30300"
-            '''
+            try {
+              sh """
+                # Création du namespace monitoring
+                kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+                
+                # Installation des CRDs
+                kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/${PROMETHEUS_VERSION}/manifests/setup
+                
+                # Attente que les CRDs soient installés
+                until kubectl get servicemonitors --all-namespaces ; do sleep 1; done
+                
+                # Installation des composants principaux
+                kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/${PROMETHEUS_VERSION}/manifests/
+                
+                # Exposition des services
+                kubectl patch svc prometheus-k8s -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"nodePort": 30900, "port": 9090, "targetPort": 9090}]}}'
+                kubectl patch svc grafana -n monitoring -p '{"spec": {"type": "NodePort", "ports": [{"nodePort": 30300, "port": 3000, "targetPort": 3000}]}}'
+                
+                echo "Monitoring installed:"
+                echo "Prometheus: http://\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30900"
+                echo "Grafana: http://\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30300"
+                echo "Grafana admin password: \$(kubectl get secret grafana-admin -n monitoring -o jsonpath='{.data.GF_SECURITY_ADMIN_PASSWORD}' | base64 --decode)"
+              """
+            } catch (Exception e) {
+              echo "Monitoring setup partially failed: ${e.getMessage()}"
+              currentBuild.result = 'UNSTABLE'
+            }
           }
         }
       }
@@ -143,8 +153,11 @@ pipeline {
       script {
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
+            echo "Attempting rollback..."
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
-            echo "Rollback attempted"
+            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=60s || true
+            echo "Cleaning monitoring resources..."
+            kubectl delete namespace monitoring --ignore-not-found=true || true
           '''
         }
       }
