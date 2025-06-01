@@ -133,17 +133,8 @@ pipeline {
                   # Création du namespace monitoring
                   kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
                   
-                  # Installation de Helm si absent
-                  if ! command -v helm &> /dev/null; then
-                      echo "Installation de Helm..."
-                      curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-                      chmod 700 get_helm.sh
-                      ./get_helm.sh
-                  fi
                   
-                  # Ajout du dépôt Helm Prometheus
-                  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-                  helm repo update
+                  
                   
                   echo "Installation de la stack Prometheus..."
                   helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
@@ -158,9 +149,7 @@ pipeline {
                       --set grafana.service.nodePort=30300 \
                       --wait --timeout 5m
                   
-                  # Attente que les composants soient prêts
-                  kubectl wait --for=condition=available deployment/$HELM_RELEASE_NAME-grafana -n monitoring --timeout=300s
-                  kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=300s
+                  
               '''
               
               // Configuration de Prometheus pour scraper l'API Gateway
