@@ -68,16 +68,11 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Configure kubectl access
               mkdir -p ~/.kube
               cp "$KUBECONFIG_FILE" ~/.kube/config
               chmod 600 ~/.kube/config
-
-              # Test connection
               kubectl get nodes
               kubectl cluster-info
-              
-              # Create namespace if not exists
               kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
             '''
           }
@@ -90,7 +85,6 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Commande simplifiée avec le namespace directement spécifié
               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
             '''
           }
@@ -103,18 +97,12 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Display deployment information
               echo "=== Deployment Status ==="
               kubectl get deploy -n $KUBE_NAMESPACE
-              
               echo "=== Service Details ==="
               kubectl get svc -n $KUBE_NAMESPACE
-              
               echo "=== Pods Status ==="
               kubectl get pods -n $KUBE_NAMESPACE
-              
-              # Generate access URL
-              echo "Application accessible via:"
               NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
               NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
               echo "http://$NODE_IP:$NODE_PORT"
@@ -130,31 +118,31 @@ pipeline {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             try {
               sh '''
-                  # Création du namespace monitoring
-                  kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-                  
-                  echo "Installation de la stack Prometheus..."
-                  helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
-                      --namespace monitoring \
-                      --version 55.7.1 \
-                      --set kubeEtcd.enabled=false \
-                      --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-                      --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-                      --set prometheus.service.type=NodePort \
-                      --set prometheus.service.nodePort=30900 \
-                      --set grafana.service.type=NodePort \
-                      --set grafana.service.nodePort=30300 \
-                      --wait --timeout 5m
+                kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
+                echo "Installation de la stack Prometheus..."
+                helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
+                  --namespace monitoring \
+                  --version 55.7.1 \
+                  --set kubeEtcd.enabled=false \
+                  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+                  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+                  --set prometheus.service.type=NodePort \
+                  --set prometheus.service.nodePort=30900 \
+                  --set grafana.service.type=NodePort \
+                  --set grafana.service.nodePort=30300 \
+                  --set alertmanager.service.type=NodePort \
+                  --set alertmanager.service.nodePort=30400 \
+                  --wait --timeout 5m
 
-                               echo "🔍 LIENS MONITORING :"
-                      NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-                      echo "Prometheus: http://$NODE_IP:30900"
-                      echo "Grafana:    http://$NODE_IP:30300"
-                  
+                echo "🔍 Interfaces Monitoring :"
+                NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                echo "Prometheus:     http://$NODE_IP:30900"
+                echo "Grafana:        http://$NODE_IP:30300"
+                echo "Alertmanager:   http://$NODE_IP:30400"
               '''
-              
-              // Configuration de Prometheus pour scraper l'API Gateway
+
+              // --- Prometheus scrape config ---
               def prometheusConfig = """
 apiVersion: v1
 kind: ConfigMap
@@ -169,8 +157,8 @@ data:
         - targets: ['bibliotheque-authentification-service.bibliotheque.svc.cluster.local:3003']
       metrics_path: /metrics
 """
-              
-              // Configuration du dashboard Grafana
+
+              // --- Grafana dashboard config ---
               def grafanaDashboard = """
 apiVersion: v1
 kind: ConfigMap
@@ -185,16 +173,36 @@ data:
       "title": "Tableau de bord API Gateway"
     }
 """
-              
+
+              // --- Prometheus alert rule ---
+              def alertRule = """
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: auth-alert-rules
+  namespace: monitoring
+spec:
+  groups:
+    - name: auth.rules
+      rules:
+        - alert: AuthServiceDown
+          expr: up{job="authentification"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Auth Service is down"
+            description: "No metrics received from authentification service for 1 minute."
+"""
+
               writeFile file: 'prometheus-config.yaml', text: prometheusConfig
               writeFile file: 'grafana-dashboard.yaml', text: grafanaDashboard
-              
+              writeFile file: 'alert-rules.yaml', text: alertRule
+
               sh '''
-                  # Application de la configuration
-                  kubectl apply -f prometheus-config.yaml
-                  kubectl apply -f grafana-dashboard.yaml
-                  
-                  
+                kubectl apply -f prometheus-config.yaml
+                kubectl apply -f grafana-dashboard.yaml
+                kubectl apply -f alert-rules.yaml
               '''
             } catch (Exception e) {
               echo "Échec de la configuration du monitoring: ${e.getMessage()}"
@@ -212,13 +220,11 @@ data:
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            
-
             echo "!!! Deployment failed - Initiating rollback !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
             kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
             echo "Rollback to previous version completed"
-            
+
             echo "Nettoyage du monitoring..."
             helm uninstall $HELM_RELEASE_NAME -n monitoring || true
             kubectl delete namespace monitoring --ignore-not-found=true || true
@@ -226,6 +232,7 @@ data:
         }
       }
     }
+
     always {
       sh 'docker logout $REGISTRY || true'
       echo "Pipeline execution completed"
