@@ -4,7 +4,7 @@ metadata:
   name: bibliotheque-auth
   namespace: bibliotheque
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: bibliotheque-auth
