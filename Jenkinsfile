@@ -205,10 +205,7 @@ data:
                   
                   
               '''
-            } catch (Exception e) {
-              echo "Échec de la configuration du monitoring: ${e.getMessage()}"
-              currentBuild.result = 'UNSTABLE'
-            }
+            } 
           }
         }
       }
