@@ -17,10 +17,10 @@ spec:
       - name: auth
         image: touatifadwa/bibliotheque-microauth:latest
         ports:
-        - containerPort: 3002
+        - containerPort: 3003
         env:
         - name: PORT
-          value: "3002"
+          value: "3003"
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
@@ -53,30 +53,12 @@ spec:
               key: db-password
         - name: DB_SSL
           value: "true"
-        - name: PGSSLMODE
-          value: "require"
-        - name: NODE_TLS_REJECT_UNAUTHORIZED
-          value: "0"
-        resources:
-          limits:
-            cpu: "0.5"
-            memory: "512Mi"
-          requests:
-            cpu: "0.2"
-            memory: "256Mi"
+        
         readinessProbe:
           httpGet:
             path: /api/health
-            port: 3002
-          initialDelaySeconds: 30
-          periodSeconds: 15
-          failureThreshold: 3
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: 3002
-          initialDelaySeconds: 45
-          periodSeconds: 20
+            port: 3003
+          
 ---
 apiVersion: v1
 kind: Service
@@ -86,9 +68,9 @@ metadata:
 spec:
   type: NodePort
   ports:
-  - port: 3002
-    targetPort: 3002
-    nodePort: 30082
+  - port: 3003
+    targetPort: 3003
+    nodePort: 30083
   selector:
     app: bibliotheque-auth
 ---
@@ -99,7 +81,7 @@ metadata:
   namespace: bibliotheque
 type: Opaque
 stringData:
-  jwt-secret: "votre_secret_jwt_tres_securise"
+  jwt-secret: "{{JWT_SECRET}}"
 ---
 apiVersion: v1
 kind: Secret
@@ -111,5 +93,5 @@ stringData:
   db-host: "ep-delicate-shadow-a4rahkg5-pooler.us-east-1.aws.neon.tech"
   db-port: "5432"
   db-name: "neondb"
-  db-user: "neondb_owner"
-  db-password: "npg_0wkXyfZg9ild"
+  db-user: "{{DB_USER}}"
+  db-password: "{{DB_PASSWORD}}"
