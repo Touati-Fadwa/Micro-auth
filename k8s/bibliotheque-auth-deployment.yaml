@@ -77,7 +77,7 @@ spec:
   ports:
   - port: 3003
     targetPort: 3003
-    nodePort: 30083
+    nodePort: 30082
   selector:
     app: bibliotheque-auth
 ---
