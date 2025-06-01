@@ -212,10 +212,9 @@ data:
                   
                   
               '''
-            Accès aux services:
+           
 
-- Grafana:      http://${sh(returnStdout: true, script: 'echo $NODE_IP').trim()}:30300
-- Prometheus:   http://${sh(returnStdout: true, script: 'echo $NODE_IP').trim()}:30900
+
           }
         }
       }
