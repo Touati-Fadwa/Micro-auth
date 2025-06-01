@@ -220,7 +220,7 @@ data:
       }
     }
 
-
+    }
   }
 
   post {
@@ -247,5 +247,4 @@ data:
       echo "Pipeline execution completed"
     }
   }
-}
 }
