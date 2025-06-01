@@ -203,12 +203,7 @@ data:
                   kubectl apply -f prometheus-config.yaml
                   kubectl apply -f grafana-dashboard.yaml
                   
-                  # Affichage des informations d'accès
-                  echo "\n=== Accès au monitoring ==="
-                  echo "URL Grafana: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30300"
-                  echo "URL Prometheus: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30900"
-                  echo "Identifiants Grafana: admin/$(kubectl get secret monitoring-stack-grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 --decode)"
-              '''
+                  
             } catch (Exception e) {
               echo "Échec de la configuration du monitoring: ${e.getMessage()}"
               currentBuild.result = 'UNSTABLE'
