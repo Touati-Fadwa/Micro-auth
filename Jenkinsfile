@@ -63,8 +63,6 @@ pipeline {
       }
     }
 
-   
-
     stage('Configure K3s Access') {
       steps {
         script {
@@ -92,10 +90,9 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-             # Commande simplifiée avec le namespace directement spécifié
-               kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
-               
-             '''
+              # Commande simplifiée avec le namespace directement spécifié
+              kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
+            '''
           }
         }
       }
@@ -106,8 +103,6 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              
-              
               # Display deployment information
               echo "=== Deployment Status ==="
               kubectl get deploy -n $KUBE_NAMESPACE
@@ -129,7 +124,6 @@ pipeline {
       }
     }
 
-    // Nouvelle étape pour configurer le monitoring
     stage('Setup Monitoring') {
       steps {
         script {
@@ -197,8 +191,7 @@ metadata:
 data:
   api-gateway-dashboard.json: |
     {
-      "title": "Tableau de bord API Gateway",
-      // Configuration complète du dashboard...
+      "title": "Tableau de bord API Gateway"
     }
 """
               
@@ -210,16 +203,16 @@ data:
                   kubectl apply -f prometheus-config.yaml
                   kubectl apply -f grafana-dashboard.yaml
                   
+                  # Affichage des informations d'accès
+                  echo "\n=== Accès au monitoring ==="
+                  echo "URL Grafana: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30300"
+                  echo "URL Prometheus: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'):30900"
                   
               '''
-           
-
-
+            } 
           }
         }
       }
-    }
-
     }
   }
 
@@ -230,6 +223,7 @@ data:
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
             
+
             echo "!!! Deployment failed - Initiating rollback !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
             kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
