@@ -71,8 +71,10 @@ pipeline {
               mkdir -p ~/.kube
               cp "$KUBECONFIG_FILE" ~/.kube/config
               chmod 600 ~/.kube/config
+
               kubectl get nodes
               kubectl cluster-info
+              
               kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
             '''
           }
@@ -99,10 +101,14 @@ pipeline {
             sh '''
               echo "=== Deployment Status ==="
               kubectl get deploy -n $KUBE_NAMESPACE
+              
               echo "=== Service Details ==="
               kubectl get svc -n $KUBE_NAMESPACE
+              
               echo "=== Pods Status ==="
               kubectl get pods -n $KUBE_NAMESPACE
+              
+              echo "Application accessible via:"
               NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
               NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
               echo "http://$NODE_IP:$NODE_PORT"
@@ -117,76 +123,65 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             try {
-              // 📩 Configuration SMTP pour Alertmanager
-              def alertmanagerConfig = """
-alertmanager:
-  config:
-    global:
-      smtp_smarthost: 'smtp.gmail.com:587'
-      smtp_from: 'fadwatouati58@gmail.com'
-      smtp_auth_username: 'fadwatouati58@gmail.com'
-      smtp_auth_password: 'lkzz ztmf jooy npdf'  # 🔒 à sécuriser
-      smtp_require_tls: true
-    route:
-      receiver: 'mail-alert'
-      group_wait: 10s
-      group_interval: 30s
-      repeat_interval: 1h
-    receivers:
-      - name: 'mail-alert'
-        email_configs:
-          - to: 'tonemail@example.com'
-            send_resolved: true
-              """
-
-              writeFile file: 'alertmanager-config.yaml', text: alertmanagerConfig
-
               sh '''
                 kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-                echo "Installation de la stack Prometheus avec configuration Alertmanager..."
-                helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-                helm repo update
+                
+                echo "Installation de la stack Prometheus..."
                 helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
-                  --namespace monitoring \
-                  --version 55.7.1 \
-                  --values alertmanager-config.yaml \
-                  --set kubeEtcd.enabled=false \
-                  --set prometheus.service.type=NodePort \
-                  --set prometheus.service.nodePort=30900 \
-                  --set grafana.service.type=NodePort \
-                  --set grafana.service.nodePort=30300 \
-                  --wait --timeout 5m
+                    --namespace monitoring \
+                    --version 55.7.1 \
+                    --set kubeEtcd.enabled=false \
+                    --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+                    --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+                    --set prometheus.service.type=NodePort \
+                    --set prometheus.service.nodePort=30900 \
+                    --set grafana.service.type=NodePort \
+                    --set grafana.service.nodePort=30300 \
+                    --wait --timeout 5m
 
                 echo "🔍 LIENS MONITORING :"
                 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-                echo "Prometheus:     http://$NODE_IP:30900"
-                echo "Grafana:        http://$NODE_IP:30300"
-                echo "Alertmanager:   http://$NODE_IP:9093"
+                echo "Prometheus: http://$NODE_IP:30900"
+                echo "Grafana:    http://$NODE_IP:30300"
               '''
 
-              // 🔔 Ajouter règle d’alerte
-              def alertRules = """
-apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
+              def prometheusConfig = """
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: pod-alerts
+  name: prometheus-authentification-config
   namespace: monitoring
-spec:
-  groups:
-    - name: pod-alerts
-      rules:
-        - alert: PodCrashLooping
-          expr: rate(kube_pod_container_status_restarts_total[1m]) > 0.2
-          for: 2m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Pod en boucle de redémarrage"
-            description: "Le pod {{ \$labels.pod }} dans le namespace {{ \$labels.namespace }} redémarre trop souvent."
-              """
-              writeFile file: 'alert-rules.yaml', text: alertRules
-              sh 'kubectl apply -f alert-rules.yaml'
+data:
+  prometheus-authentification.yml: |
+    - job_name: 'authentification'
+      scrape_interval: 15s
+      static_configs:
+        - targets: ['bibliotheque-authentification-service.bibliotheque.svc.cluster.local:3003']
+      metrics_path: /metrics
+"""
 
+              def grafanaDashboard = """
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-authentification-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  api-gateway-dashboard.json: |
+    {
+      "title": "Tableau de bord API Gateway"
+    }
+"""
+
+              writeFile file: 'prometheus-config.yaml', text: prometheusConfig
+              writeFile file: 'grafana-dashboard.yaml', text: grafanaDashboard
+
+              sh '''
+                kubectl apply -f prometheus-config.yaml
+                kubectl apply -f grafana-dashboard.yaml
+              '''
             } catch (Exception e) {
               echo "Échec de la configuration du monitoring: ${e.getMessage()}"
               currentBuild.result = 'UNSTABLE'
@@ -207,12 +202,28 @@ spec:
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
             kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
             echo "Rollback to previous version completed"
+            
             echo "Nettoyage du monitoring..."
             helm uninstall $HELM_RELEASE_NAME -n monitoring || true
             kubectl delete namespace monitoring --ignore-not-found=true || true
           '''
         }
       }
+      // Envoi d'un email d'alerte en cas d'échec
+      mail to: 'ton.email@exemple.com',
+           subject: "ALERTE: Échec du pipeline Jenkins - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+           body: """\
+Bonjour,
+
+Le pipeline Jenkins '${env.JOB_NAME}' build #${env.BUILD_NUMBER} a échoué.
+
+Merci de vérifier le job et corriger les erreurs.
+
+Lien du job: ${env.BUILD_URL}
+
+Cordialement,
+Jenkins.
+"""
     }
     always {
       sh 'docker logout $REGISTRY || true'
