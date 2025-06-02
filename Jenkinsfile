@@ -127,7 +127,14 @@ pipeline {
     stage('Setup Monitoring') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
+          withCredentials([
+            file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
+            usernamePassword(
+              credentialsId: 'SMTP_CREDENTIALS',
+              usernameVariable: 'SMTP_USER',
+              passwordVariable: 'SMTP_PASSWORD'
+            )
+          ]) {
             try {
               sh '''
                   # Création du namespace monitoring
@@ -144,14 +151,23 @@ pipeline {
                       --set prometheus.service.nodePort=30900 \
                       --set grafana.service.type=NodePort \
                       --set grafana.service.nodePort=30300 \
+                      --set alertmanager.config.global.resolve_timeout=5m \
+                      --set alertmanager.config.global.smtp_smarthost="smtp.gmail.com:587" \
+                      --set alertmanager.config.global.smtp_from="$SMTP_USER" \
+                      --set alertmanager.config.global.smtp_auth_username="$SMTP_USER" \
+                      --set alertmanager.config.global.smtp_auth_password="$SMTP_PASSWORD" \
+                      --set alertmanager.config.global.smtp_require_tls=true \
+                      --set alertmanager.config.route.receiver=team-email \
+                      --set alertmanager.config.receivers[0].name=team-email \
+                      --set alertmanager.config.receivers[0].email_configs[0].to="dev-team@example.com" \
+                      --set alertmanager.config.receivers[0].email_configs[0].send_resolved=true \
                       --wait --timeout 5m
 
-
-                               echo "🔍 LIENS MONITORING :"
-                      NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-                      echo "Prometheus: http://$NODE_IP:30900"
-                      echo "Grafana:    http://$NODE_IP:30300"
-                  
+                  echo "🔍 LIENS MONITORING :"
+                  NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                  echo "Prometheus: http://$NODE_IP:30900"
+                  echo "Grafana:    http://$NODE_IP:30300"
+                  echo "Alertmanager: http://$NODE_IP:30903"
               '''
               
               // Configuration de Prometheus pour scraper l'API Gateway
@@ -182,7 +198,17 @@ metadata:
 data:
   api-gateway-dashboard.json: |
     {
-      "title": "Tableau de bord API Gateway"
+      "title": "Tableau de bord API Gateway",
+      "panels": [
+        {
+          "title": "Requêtes par seconde",
+          "type": "graph",
+          "targets": [{
+            "expr": "rate(http_requests_total[1m])",
+            "legendFormat": "{{handler}}"
+          }]
+        }
+      ]
     }
 """
               
@@ -193,8 +219,6 @@ data:
                   # Application de la configuration
                   kubectl apply -f prometheus-config.yaml
                   kubectl apply -f grafana-dashboard.yaml
-                  
-                  
               '''
             } catch (Exception e) {
               echo "Échec de la configuration du monitoring: ${e.getMessage()}"
@@ -212,8 +236,6 @@ data:
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            
-
             echo "!!! Deployment failed - Initiating rollback !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
             kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
