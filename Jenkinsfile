@@ -7,9 +7,9 @@ pipeline {
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
     HELM_RELEASE_NAME = "monitoring-stack"
-    ALERT_EMAIL = "fadwatouati58@gmail.com"  // À remplacer par votre email
-    SMTP_HOST = "smtp.gmail.com"           // À configurer selon votre fournisseur SMTP
-    SMTP_PORT = "587"                      // Port SMTP
+    ALERT_EMAIL = "fadwatouati58@gmail.com"
+    SMTP_HOST = "smtp.gmail.com"
+    SMTP_PORT = "587"
   }
 
   stages {
@@ -71,16 +71,13 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              # Configure kubectl access
               mkdir -p ~/.kube
               cp "$KUBECONFIG_FILE" ~/.kube/config
               chmod 600 ~/.kube/config
-
-              # Test connection
+              
               kubectl get nodes
               kubectl cluster-info
               
-              # Create namespace if not exists
               kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
             '''
           }
@@ -93,7 +90,7 @@ pipeline {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
+              kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n $KUBE_NAMESPACE
             '''
           }
         }
@@ -107,16 +104,12 @@ pipeline {
             sh '''
               echo "=== Deployment Status ==="
               kubectl get deploy -n $KUBE_NAMESPACE
-              
-              echo "=== Service Details ==="
-              kubectl get svc -n $KUBE_NAMESPACE
-              
               echo "=== Pods Status ==="
               kubectl get pods -n $KUBE_NAMESPACE
               
               NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
               NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
-              echo "Application accessible via: http://$NODE_IP:$NODE_PORT"
+              echo "Application URL: http://$NODE_IP:$NODE_PORT"
             '''
           }
         }
@@ -135,17 +128,23 @@ pipeline {
             )
           ]) {
             try {
+              // Cleanup existing installation
               sh '''
-                # Create monitoring namespace
-                kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+                helm uninstall $HELM_RELEASE_NAME -n monitoring 2>/dev/null || true
+                kubectl delete namespace monitoring --ignore-not-found=true
+                sleep 10
+              '''
+              
+              // Create monitoring namespace
+              sh '''
+                kubectl create namespace monitoring
+              '''
 
-                # Install Prometheus Stack with AlertManager
-                helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
+              // Install Prometheus Stack
+              sh """
+                helm install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
                   --namespace monitoring \
                   --version 55.7.1 \
-                  --set kubeEtcd.enabled=false \
-                  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-                  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
                   --set prometheus.service.type=NodePort \
                   --set prometheus.service.nodePort=30900 \
                   --set grafana.service.type=NodePort \
@@ -160,154 +159,113 @@ pipeline {
                   --set alertmanager.config.receivers[0].name="default-receiver" \
                   --set alertmanager.config.receivers[0].email_configs[0].to="$ALERT_EMAIL" \
                   --set alertmanager.config.route.receiver="default-receiver" \
-                  --set alertmanager.config.route.group_wait="30s" \
-                  --set alertmanager.config.route.group_interval="5m" \
-                  --set alertmanager.config.route.repeat_interval="3h" \
                   --wait --timeout 5m
+              """
 
-                echo "Monitoring stack installed successfully!"
-              '''
-
-              // Default alert rules
+              // Configure custom alerts
               def alertRules = """
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: default-alerts
+  name: auth-service-alerts
   namespace: monitoring
   labels:
     prometheus: kube-prometheus-stack-prometheus
     role: alert-rules
 spec:
   groups:
-  - name: general.rules
+  - name: auth-service-availability
     rules:
-    - alert: HighPodRestart
-      expr: rate(kube_pod_container_status_restarts_total[5m]) > 0
-      for: 10m
-      labels:
-        severity: warning
-      annotations:
-        summary: "High Pod Restart Rate (instance {{ \$labels.instance }})"
-        description: "Pod {{ \$labels.pod }} in {{ \$labels.namespace }} has restarted {{ \$value }} times in the last 5 minutes"
-        
-    - alert: ServiceDown
-      expr: up == 0
-      for: 5m
+    - alert: AuthServiceDown
+      expr: up{job=~"bibliotheque-auth.*"} == 0
+      for: 1m
       labels:
         severity: critical
+        domain: auth
       annotations:
-        summary: "Service down (instance {{ \$labels.instance }})"
-        description: "{{ \$labels.job }} on {{ \$labels.instance }} has been down for more than 5 minutes"
+        summary: "Service d'authentification indisponible"
+        description: "Le service d'authentification est down sur {{ \$labels.pod }}"
         
-    - alert: HighCPUUsage
-      expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-      for: 10m
+    - alert: AuthHighErrorRate
+      expr: sum(rate(http_requests_total{job=~"bibliotheque-auth.*", status=~"5.."}[1m])) by (pod) / sum(rate(http_requests_total{job=~"bibliotheque-auth.*"}[1m])) by (pod) > 0.05
+      for: 2m
       labels:
         severity: warning
+        domain: auth
       annotations:
-        summary: "High CPU usage (instance {{ \$labels.instance }})"
-        description: "CPU usage is {{ \$value }}% for more than 10 minutes"
+        summary: "Taux d'erreur élevé ({{ \$value }}%)"
+        description: "Taux d'erreur > 5% sur le pod {{ \$labels.pod }}"
         
-    - alert: HighMemoryUsage
-      expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 20
-      for: 10m
-      labels:
-        severity: warning
-      annotations:
-        summary: "High Memory usage (instance {{ \$labels.instance }})"
-        description: "Memory available is only {{ \$value }}% for more than 10 minutes"
-        
-    - alert: HighDiskUsage
-      expr: 100 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} * 100) > 85
-      for: 15m
-      labels:
-        severity: warning
-      annotations:
-        summary: "High Disk usage (instance {{ \$labels.instance }})"
-        description: "Disk usage is {{ \$value }}% for more than 15 minutes"
-        
-  - name: application.rules
+  - name: auth-service-performance
     rules:
-    - alert: AuthServiceHighLatency
-      expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="authentification"}[5m])) by (le)) > 1
+    - alert: AuthHighLatency
+      expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~"bibliotheque-auth.*"}[1m])) by (le, pod)) > 1
+      for: 3m
+      labels:
+        severity: warning
+        domain: auth
+      annotations:
+        summary: "Latence élevée ({{ \$value }}s)"
+        description: "95p des requêtes > 1s sur {{ \$labels.pod }}"
+        
+    - alert: AuthHighCPU
+      expr: process_cpu_seconds_total{job=~"bibliotheque-auth.*"} > 0.9
       for: 5m
       labels:
         severity: warning
+        domain: auth
       annotations:
-        summary: "High latency in authentication service"
-        description: "95th percentile latency is {{ \$value }} seconds"
+        summary: "Utilisation CPU élevée"
+        description: "CPU > 90% sur {{ \$labels.pod }}"
         
-    - alert: AuthServiceHighErrorRate
-      expr: rate(http_requests_total{job="authentification", status=~"5.."}[5m]) / rate(http_requests_total{job="authentification"}[5m]) > 0.05
-      for: 5m
+  - name: auth-service-business
+    rules:
+    - alert: AuthFailedLoginsSpike
+      expr: rate(auth_failed_logins_total{job=~"bibliotheque-auth.*"}[5m]) > 10
+      for: 2m
       labels:
-        severity: critical
+        severity: warning
+        domain: auth
       annotations:
-        summary: "High error rate in authentication service"
-        description: "Error rate is {{ \$value }}% for more than 5 minutes"
+        summary: "Pic de connexions échouées"
+        description: "Plus de 10 échecs/min sur {{ \$labels.pod }}"
 """
 
-              // Prometheus config for scraping
-              def prometheusConfig = """
-apiVersion: v1
-kind: ConfigMap
+              // ServiceMonitor for auth service
+              def serviceMonitor = """
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
 metadata:
-  name: prometheus-authentification-config
+  name: bibliotheque-auth-monitor
   namespace: monitoring
-data:
-  prometheus-authentification.yml: |
-    - job_name: 'authentification'
-      scrape_interval: 15s
-      static_configs:
-        - targets: ['bibliotheque-auth-service.bibliotheque.svc.cluster.local:3003']
-      metrics_path: /metrics
-"""
-
-              // Grafana dashboard
-              def grafanaDashboard = """
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: grafana-auth-dashboard
-  namespace: monitoring
-  labels:
-    grafana_dashboard: "1"
-data:
-  auth-dashboard.json: |
-    {
-      "title": "Authentication Service Dashboard",
-      "panels": [
-        {
-          "title": "HTTP Requests",
-          "type": "graph",
-          "targets": [
-            {
-              "expr": "rate(http_requests_total{job=\"authentification\"}[5m])",
-              "legendFormat": "{{method}} {{status}}"
-            }
-          ]
-        }
-      ]
-    }
+spec:
+  selector:
+    matchLabels:
+      app: bibliotheque-auth
+  endpoints:
+  - port: http
+    interval: 15s
+    path: /metrics
 """
 
               writeFile file: 'alert-rules.yaml', text: alertRules
-              writeFile file: 'prometheus-config.yaml', text: prometheusConfig
-              writeFile file: 'grafana-dashboard.yaml', text: grafanaDashboard
+              writeFile file: 'service-monitor.yaml', text: serviceMonitor
 
               sh '''
-                # Apply configurations
+                # Apply monitoring configuration
                 kubectl apply -f alert-rules.yaml
-                kubectl apply -f prometheus-config.yaml
-                kubectl apply -f grafana-dashboard.yaml
+                kubectl apply -f service-monitor.yaml
 
-                # Display monitoring URLs
+                # Display access information
                 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
                 echo "=== Monitoring URLs ==="
-                echo "Prometheus:    http://$NODE_IP:30900"
-                echo "Grafana:       http://$NODE_IP:30300 (admin/prom-operator)"
-                echo "AlertManager:  http://$NODE_IP:30903"
+                echo "Prometheus: http://$NODE_IP:30900"
+                echo "Grafana: http://$NODE_IP:30300 (admin/prom-operator)"
+                echo "AlertManager: http://$NODE_IP:30903"
+                
+                # Create temporary port-forward
+                kubectl port-forward -n monitoring svc/alertmanager-operated 9093:9093 &
+                echo "For immediate access, use port-forward: http://localhost:9093"
               '''
             } catch (Exception e) {
               echo "Monitoring setup failed: ${e.getMessage()}"
@@ -322,24 +280,18 @@ data:
   post {
     failure {
       script {
-        echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            echo "!!! Deployment failed - Initiating rollback !!!"
+            echo "Performing rollback..."
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
-            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
-            echo "Rollback to previous version completed"
-            
-            echo "Cleaning up monitoring..."
             helm uninstall $HELM_RELEASE_NAME -n monitoring || true
-            kubectl delete namespace monitoring --ignore-not-found=true || true
           '''
         }
       }
     }
     always {
       sh 'docker logout $REGISTRY || true'
-      echo "Pipeline execution completed"
+      echo "Pipeline completed"
     }
   }
 }
