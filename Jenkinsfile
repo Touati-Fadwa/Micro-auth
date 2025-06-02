@@ -7,7 +7,7 @@ pipeline {
     REGISTRY = "docker.io"
     KUBE_NAMESPACE = "bibliotheque"
     HELM_RELEASE_NAME = "monitoring-stack"
-    ALERT_EMAIL = "your-email@example.com"  // À remplacer par votre email
+    ALERT_EMAIL = "fadwatouati58@gmail.com"  // À remplacer par votre email
     SMTP_HOST = "smtp.gmail.com"           // À configurer selon votre fournisseur SMTP
     SMTP_PORT = "587"                      // Port SMTP
   }
@@ -129,7 +129,7 @@ pipeline {
           withCredentials([
             file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
             usernamePassword(
-              credentialsId: 'smtp-credentials',
+              credentialsId: 'SMTP_CREDENTIALS',
               usernameVariable: 'SMTP_USER',
               passwordVariable: 'SMTP_PASSWORD'
             )
