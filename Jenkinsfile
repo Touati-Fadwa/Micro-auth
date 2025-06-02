@@ -146,12 +146,10 @@ pipeline {
                       --set grafana.service.nodePort=30300 \
                       --wait --timeout 5m
 
-
-                               echo "🔍 LIENS MONITORING :"
-                      NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-                      echo "Prometheus: http://$NODE_IP:30900"
-                      echo "Grafana:    http://$NODE_IP:30300"
-                  
+                  echo "🔍 LIENS MONITORING :"
+                  NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                  echo "Prometheus: http://$NODE_IP:30900"
+                  echo "Grafana:    http://$NODE_IP:30300"
               '''
               
               // Configuration de Prometheus pour scraper l'API Gateway
@@ -193,8 +191,6 @@ data:
                   # Application de la configuration
                   kubectl apply -f prometheus-config.yaml
                   kubectl apply -f grafana-dashboard.yaml
-                  
-                  
               '''
             } catch (Exception e) {
               echo "Échec de la configuration du monitoring: ${e.getMessage()}"
@@ -212,8 +208,6 @@ data:
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            
-
             echo "!!! Deployment failed - Initiating rollback !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
             kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
