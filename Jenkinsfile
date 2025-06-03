@@ -263,7 +263,7 @@ EOF
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         try {
                             sh '''
-                            cat > prometheus-rules.yaml <<'EOF'
+                            cat > prometheus-rules.yaml <<EOF
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -273,14 +273,14 @@ spec:
   groups:
   - name: disk.rules
     rules:
-  - alert: LowDiskSpace
-    expr: 100 - (100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 90
-    for: 10m
-    labels:
-      severity: critical
-    annotations:
-      summary: "Disk space critically low (instance: {{ \$labels.instance }})"
-      description: "Disk usage on {{ \$labels.instance }} is at {{ \$value | printf \"%.2f\" }}%"
+    - alert: LowDiskSpace
+      expr: 100 - (100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 90
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Disk space critically low (instance: {{ \$labels.instance }})"
+        description: "Disk usage on {{ \$labels.instance }} is at {{ \$value | printf \"%.2f\" }}%"
 EOF
                             '''
                             
