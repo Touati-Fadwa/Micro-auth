@@ -22,8 +22,7 @@ pipeline {
         stage('Install') {
             steps {
                 dir('microservice-auth') {
-                    sh 'npm ci --ignore-scripts'
-                    sh 'npm outdated || true'
+                    sh 'npm ci'
                 }
             }
         }
@@ -67,20 +66,6 @@ pipeline {
             }
         }
 
-        stage('Check Cluster Health') {
-            steps {
-                script {
-                    withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
-                        sh """
-                        echo "=== Node Status ==="
-                        kubectl get nodes
-                        kubectl describe node k3s-worker-01 || true
-                        """
-                    }
-                }
-            }
-        }
-
         stage('Configure K3s Access') {
             steps {
                 script {
@@ -106,19 +91,6 @@ pipeline {
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         sh """
                         kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n ${KUBE_NAMESPACE}
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Debug Pods') {
-            steps {
-                script {
-                    withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
-                        sh """
-                        echo "=== Checking pod logs ==="
-                        kubectl get pods -n ${KUBE_NAMESPACE} | grep bibliotheque-auth | awk '{print \$1}' | xargs -I {} kubectl logs {} -n ${KUBE_NAMESPACE} --previous || true
                         """
                     }
                 }
@@ -222,6 +194,7 @@ EOF
                                 --from-file=alertmanager.yml=alertmanager-config.yml \
                                 --dry-run=client -o yaml | kubectl apply -f -
                             
+                            # Déploiement AlertManager
                             kubectl apply -n monitoring -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -254,6 +227,7 @@ spec:
           secretName: alertmanager-config
 EOF
 
+                            # Service AlertManager
                             kubectl apply -n monitoring -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -289,7 +263,7 @@ EOF
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         try {
                             sh '''
-                            cat > prometheus-rules.yaml <<'EOF'
+                            cat > prometheus-rules.yaml <<EOF
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -299,26 +273,25 @@ spec:
   groups:
   - name: disk.rules
     rules:
-  - alert: LowDiskSpace
-    expr: 100 - (100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 90
-    for: 10m
-    labels:
-      severity: critical
-    annotations:
-      summary: "Disk space critically low (instance: {{ \$labels.instance }})"
-      description: "Disk usage on {{ \$labels.instance }} is at {{ \$value }}%"
+    - alert: LowDiskSpace
+      expr: 100 - (100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 90
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Disk space critically low (instance: {{ \$labels.instance }})"
+        description: "Disk usage on {{ \$labels.instance }} is at {{ \$value | printf \"%.2f\" }}%"
 EOF
                             '''
                             
                             sh """
                             kubectl apply -n monitoring -f prometheus-rules.yaml
+                            rm -f prometheus-rules.yaml
                             echo "✅ Disk usage alert configured successfully"
                             """
                         } catch (Exception e) {
                             echo "⚠️ Alert configuration failed: ${e.getMessage()}"
                             currentBuild.result = 'UNSTABLE'
-                        } finally {
-                            sh "rm -f prometheus-rules.yaml || true"
                         }
                     }
                 }
