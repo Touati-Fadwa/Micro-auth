@@ -206,11 +206,7 @@ data:
         script {
           withCredentials([
             file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
-            usernamePassword(
-              credentialsId: 'gmail-credentials',
-              usernameVariable: 'GMAIL_USER',
-              passwordVariable: 'GMAIL_APP_PASSWORD' // Utilisation d'un mot de passe d'application
-            )
+            
           ]) {
             // Configuration Alertmanager avec gestion d'erreur
             try {
@@ -224,9 +220,9 @@ data:
   config.yml: |
     global:
       smtp_smarthost: 'smtp.gmail.com:587'
-      smtp_from: '${env.GMAIL_USER}'
-      smtp_auth_username: '${env.GMAIL_USER}'
-      smtp_auth_password: '${env.GMAIL_APP_PASSWORD}'
+      smtp_from: 'fadwatouati58@gmail.com'
+      smtp_auth_username: 'fadwatouati58@gmail.com'
+      smtp_auth_password: 'omjo sxab eqta lzus'
       smtp_require_tls: true
     
     route:
@@ -238,7 +234,7 @@ data:
     receivers:
     - name: 'email-notifications'
       email_configs:
-      - to: '${env.GMAIL_USER}'
+      - to: 'fadwatouati58@gmail.com'
         send_resolved: true
         headers:
           Subject: '[Alert] {{ .CommonAnnotations.summary }}'
