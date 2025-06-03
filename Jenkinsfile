@@ -279,8 +279,8 @@ spec:
       labels:
         severity: critical
       annotations:
-        summary: "Disk space critically low on {{ \$labels.instance }}"
-        description: "Disk usage is {{ \$value }}% on {{ \$labels.instance }} (mount: {{ \$labels.mountpoint }})"
+        summary: "Disk space critically low (instance: {{ \$labels.instance }})"
+        description: "Disk usage on {{ \$labels.instance }} is at {{ \$value | printf \"%.2f\" }}%"
 EOF
                             '''
                             
