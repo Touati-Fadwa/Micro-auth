@@ -208,19 +208,19 @@ route:
 receivers:
 - name: 'email-notifications'
   email_configs:
-- to: '${SMTP_USER}'
-  send_resolved: true
+  - to: '${SMTP_USER}'
+    send_resolved: true
 EOF
                             '''
                             
                             sh """
-                            # Mise à jour de la configuration
-                            kubectl create secret generic alertmanager-${HELM_RELEASE_NAME}-kube-prom-alertmanager \
+                            # Correction du nom du StatefulSet
+                            kubectl create secret generic alertmanager-${HELM_RELEASE_NAME}-alertmanager \
                                 --from-file=alertmanager.yaml=alertmanager-config.yml \
                                 --dry-run=client -o yaml | kubectl apply -n monitoring -f -
                             
-                            # Redémarrage d'Alertmanager
-                            kubectl rollout restart statefulset/${HELM_RELEASE_NAME}-kube-prom-alertmanager -n monitoring
+                            # Correction du nom du StatefulSet
+                            kubectl rollout restart statefulset/${HELM_RELEASE_NAME}-alertmanager -n monitoring
                             """
                         } catch (Exception e) {
                             echo "AlertManager configuration failed: ${e.getMessage()}"
@@ -244,7 +244,7 @@ metadata:
   name: basic-alerts
   namespace: monitoring
   labels:
-    release: ${HELM_RELEASE_NAME}
+    release: monitoring-stack  # Correction: valeur fixe au lieu de la variable
     role: alert-rules
 spec:
   groups:
