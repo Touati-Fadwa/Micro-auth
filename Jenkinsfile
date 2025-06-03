@@ -123,6 +123,22 @@ pipeline {
             }
         }
 
+        stage('Clean Existing Monitoring') {
+            steps {
+                script {
+                    withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
+                        sh """
+                        echo "Cleaning existing monitoring resources..."
+                        helm uninstall ${HELM_RELEASE_NAME} -n monitoring --ignore-not-found || true
+                        kubectl delete svc monitoring-stack-kube-prom-alertmanager -n monitoring --ignore-not-found || true
+                        kubectl delete svc alertmanager -n monitoring --ignore-not-found || true
+                        kubectl delete ns monitoring --ignore-not-found || true
+                        """
+                    }
+                }
+            }
+        }
+
         stage('Setup Monitoring Stack') {
             steps {
                 script {
@@ -131,7 +147,7 @@ pipeline {
                             sh """
                             kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
-                            # Installation simplifiée avec configuration intégrée Alertmanager
+                            # Installation avec configuration intégrée
                             helm upgrade --install ${HELM_RELEASE_NAME} prometheus-community/kube-prometheus-stack \
                             --namespace monitoring \
                             --version 55.7.1 \
@@ -174,7 +190,7 @@ pipeline {
                     ]) {
                         try {
                             sh '''
-                            cat > alertmanager-config.yml <<EOF
+                            cat > alertmanager-config.yml <<'EOF'
 global:
   smtp_from: '${SMTP_USER}'
   smtp_smarthost: 'smtp.gmail.com:587'
@@ -192,19 +208,19 @@ route:
 receivers:
 - name: 'email-notifications'
   email_configs:
-  - to: '${SMTP_USER}'
-    send_resolved: true
+- to: '${SMTP_USER}'
+  send_resolved: true
 EOF
                             '''
                             
                             sh """
-                            # Mise à jour de la configuration existante
-                            kubectl create secret generic alertmanager-${HELM_RELEASE_NAME}-alertmanager \
+                            # Mise à jour de la configuration
+                            kubectl create secret generic alertmanager-${HELM_RELEASE_NAME}-kube-prom-alertmanager \
                                 --from-file=alertmanager.yaml=alertmanager-config.yml \
                                 --dry-run=client -o yaml | kubectl apply -n monitoring -f -
                             
-                            # Redémarrage d'Alertmanager pour appliquer les changements
-                            kubectl rollout restart statefulset/alertmanager-${HELM_RELEASE_NAME}-alertmanager -n monitoring
+                            # Redémarrage d'Alertmanager
+                            kubectl rollout restart statefulset/${HELM_RELEASE_NAME}-kube-prom-alertmanager -n monitoring
                             """
                         } catch (Exception e) {
                             echo "AlertManager configuration failed: ${e.getMessage()}"
@@ -221,7 +237,7 @@ EOF
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         try {
                             sh '''
-                            cat > prometheus-rules.yaml <<EOF
+                            cat > prometheus-rules.yaml <<'EOF'
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -240,8 +256,8 @@ spec:
       labels:
         severity: warning
       annotations:
-        summary: "High memory usage on pod {{ \$labels.pod }}"
-        description: "Pod {{ \$labels.pod }} in namespace {{ \$labels.namespace }} is using {{ printf \"%.2f\" \$value }}% of its memory limit."
+        summary: High memory usage on pod {{ $labels.pod }}
+        description: Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using {{ printf "%.2f" $value }}% of its memory limit.
     
     - alert: HighCPUUsage
       expr: sum(rate(container_cpu_usage_seconds_total{namespace!="",container!=""}[5m])) by (namespace,pod,container) / sum(container_spec_cpu_quota{namespace!="",container!=""}/container_spec_cpu_period{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
@@ -249,8 +265,8 @@ spec:
       labels:
         severity: warning
       annotations:
-        summary: "High CPU usage on pod {{ \$labels.pod }}"
-        description: "Pod {{ \$labels.pod }} in namespace {{ \$labels.namespace }} is using {{ printf \"%.2f\" \$value }}% of its CPU limit."
+        summary: High CPU usage on pod {{ $labels.pod }}
+        description: Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using {{ printf "%.2f" $value }}% of its CPU limit.
 EOF
                             '''
                             
