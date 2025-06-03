@@ -204,12 +204,17 @@ data:
     stage('Setup Alert Manager') {
       steps {
         script {
-          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
-                          usernamePassword(credentialsId: 'gmail-credentials', 
-                                          usernameVariable: 'GMAIL_USER', 
-                                          passwordVariable: 'GMAIL_PASSWORD')]) {
-            // Création des ressources Alertmanager
-            def alertManagerConfig = """
+          withCredentials([
+            file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
+            usernamePassword(
+              credentialsId: 'gmail-credentials',
+              usernameVariable: 'GMAIL_USER',
+              passwordVariable: 'GMAIL_APP_PASSWORD' // Utilisation d'un mot de passe d'application
+            )
+          ]) {
+            // Configuration Alertmanager avec gestion d'erreur
+            try {
+              def alertManagerConfig = """
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -221,17 +226,22 @@ data:
       smtp_smarthost: 'smtp.gmail.com:587'
       smtp_from: '${env.GMAIL_USER}'
       smtp_auth_username: '${env.GMAIL_USER}'
-      smtp_auth_password: '${env.GMAIL_PASSWORD}'
+      smtp_auth_password: '${env.GMAIL_APP_PASSWORD}'
       smtp_require_tls: true
     
     route:
       receiver: 'email-notifications'
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 3h
     
     receivers:
     - name: 'email-notifications'
       email_configs:
       - to: '${env.GMAIL_USER}'
         send_resolved: true
+        headers:
+          Subject: '[Alert] {{ .CommonAnnotations.summary }}'
 
 ---
 apiVersion: apps/v1
@@ -300,20 +310,30 @@ spec:
         description: "Disk usage is {{ $value }}% on {{ $labels.instance }} (mountpoint {{ $labels.mountpoint }})"
 """
 
-            writeFile file: 'alertmanager-config.yaml', text: alertManagerConfig
-            
-            sh '''
-              # Appliquer la configuration Alertmanager
-              kubectl apply -f alertmanager-config.yaml
+              writeFile file: 'alertmanager-config.yaml', text: alertManagerConfig
               
-              # Configurer Prometheus pour utiliser Alertmanager
-              kubectl patch prometheus kube-prometheus-stack-prometheus -n monitoring --type merge \
-                --patch '{"spec":{"alerting":{"alertmanagers":[{"name":"alertmanager","namespace":"monitoring","port":9093}]}}}'
-              
-              echo "Alertmanager accessible via:"
-              NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-              echo "http://$NODE_IP:30903"
-            '''
+              sh '''
+                # Appliquer la configuration Alertmanager
+                kubectl apply -f alertmanager-config.yaml
+                
+                # Vérifier que la config est correcte
+                kubectl -n monitoring get configmap alertmanager-config -o yaml
+                
+                # Configurer Prometheus pour utiliser Alertmanager
+                kubectl -n monitoring patch prometheus kube-prometheus-stack-prometheus --type merge \
+                  --patch '{"spec":{"alerting":{"alertmanagers":[{"name":"alertmanager","namespace":"monitoring","port":9093}]}}}'
+                
+                # Vérifier que la règle d'alerte est bien créée
+                kubectl -n monitoring get prometheusrules disk-usage-alert -o yaml
+                
+                echo "Alertmanager accessible via:"
+                NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                echo "http://$NODE_IP:30903"
+              '''
+            } catch (Exception e) {
+              echo "Erreur lors de la configuration de l'AlertManager: ${e.getMessage()}"
+              currentBuild.result = 'UNSTABLE'
+            }
           }
         }
       }
@@ -325,16 +345,23 @@ spec:
       script {
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            echo "!!! Deployment failed - Initiating rollback !!!"
-            kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
-            kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
-            echo "Rollback to previous version completed"
-            
-            echo "Nettoyage du monitoring..."
-            helm uninstall $HELM_RELEASE_NAME -n monitoring || true
-            kubectl delete namespace monitoring --ignore-not-found=true || true
-          '''
+          try {
+            sh '''
+              # Rollback du déploiement
+              kubectl -n $KUBE_NAMESPACE rollout undo deployment/bibliotheque-auth
+              kubectl -n $KUBE_NAMESPACE rollout status deployment/bibliotheque-auth --timeout=300s
+              
+              # Nettoyage plus robuste du monitoring
+              helm -n monitoring uninstall $HELM_RELEASE_NAME || true
+              kubectl delete -n monitoring prometheusrules disk-usage-alert || true
+              kubectl delete -n monitoring configmap alertmanager-config || true
+              kubectl delete -n monitoring deployment alertmanager || true
+              kubectl delete -n monitoring service alertmanager || true
+              kubectl delete namespace monitoring --ignore-not-found=true
+            '''
+          } catch (Exception e) {
+            echo "Échec partiel du rollback: ${e.getMessage()}"
+          }
         }
       }
     }
