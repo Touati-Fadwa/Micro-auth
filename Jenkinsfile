@@ -167,8 +167,9 @@ pipeline {
                         )
                     ]) {
                         try {
-                            // Create AlertManager config file with proper YAML formatting
-                            def alertManagerConfig = """
+                            // Solution sécurisée pour éviter l'interpolation Groovy des secrets
+                            sh '''
+                            cat > alertmanager-config.yml <<EOF
 global:
   smtp_from: '${SMTP_USER}'
   smtp_smarthost: 'smtp.gmail.com:587'
@@ -188,9 +189,9 @@ receivers:
   email_configs:
   - to: '${SMTP_USER}'
     send_resolved: true
-"""
-                            writeFile file: 'alertmanager-config.yml', text: alertManagerConfig
-
+EOF
+                            '''
+                            
                             sh """
                             # Create AlertManager configuration secret
                             kubectl -n monitoring create secret generic alertmanager-config \
@@ -265,8 +266,9 @@ EOF
                 script {
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         try {
-                            // Create Prometheus rules with proper YAML formatting
-                            def prometheusRules = """
+                            // Utilisation de ''' pour éviter les problèmes d'échappement
+                            sh '''
+                            cat > prometheus-rules.yaml <<EOF
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -286,7 +288,7 @@ spec:
         severity: warning
       annotations:
         summary: "High memory usage on pod {{\\$labels.pod}}"
-        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \"%.2f\" \\$value }}% of its memory limit."
+        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its memory limit."
     
     - alert: HighCPUUsage
       expr: sum(rate(container_cpu_usage_seconds_total{namespace!="",container!=""}[5m])) by (namespace,pod,container) / sum(container_spec_cpu_quota{namespace!="",container!=""}/container_spec_cpu_period{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
@@ -295,10 +297,10 @@ spec:
         severity: warning
       annotations:
         summary: "High CPU usage on pod {{\\$labels.pod}}"
-        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \"%.2f\" \\$value }}% of its CPU limit."
-"""
-                            writeFile file: 'prometheus-rules.yaml', text: prometheusRules
-
+        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its CPU limit."
+EOF
+                            '''
+                            
                             sh """
                             kubectl apply -n monitoring -f prometheus-rules.yaml
                             rm -f prometheus-rules.yaml
