@@ -68,16 +68,13 @@ pipeline {
                 script {
                     withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
                         sh '''
-                        # Configure kubectl access
                         mkdir -p ~/.kube
                         cp "$KUBECONFIG_FILE" ~/.kube/config
                         chmod 600 ~/.kube/config
 
-                        # Test connection
                         kubectl get nodes
                         kubectl cluster-info
 
-                        # Create namespace if not exists
                         kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
                         '''
                     }
@@ -90,8 +87,7 @@ pipeline {
                 script {
                     withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
                         sh '''
-                        # Commande simplifiée avec le namespace directement spécifié
-                        kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
+                        kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n $KUBE_NAMESPACE
                         '''
                     }
                 }
@@ -103,7 +99,6 @@ pipeline {
                 script {
                     withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
                         sh '''
-                        # Display deployment information
                         echo "=== Deployment Status ==="
                         kubectl get deploy -n $KUBE_NAMESPACE
 
@@ -113,7 +108,6 @@ pipeline {
                         echo "=== Pods Status ==="
                         kubectl get pods -n $KUBE_NAMESPACE
 
-                        # Generate access URL
                         echo "Application accessible via:"
                         NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
                         NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
@@ -130,10 +124,8 @@ pipeline {
                     withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
                         try {
                             sh '''
-                            # Création du namespace monitoring
                             kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
-                            echo "Installation de la stack Prometheus..."
                             helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
                             --namespace monitoring \
                             --version 55.7.1 \
@@ -146,13 +138,13 @@ pipeline {
                             --set grafana.service.nodePort=30300 \
                             --wait --timeout 5m
 
-                            echo "🔍 LIENS MONITORING :"
+                            echo "🔍 Monitoring Links:"
                             NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
                             echo "Prometheus: http://$NODE_IP:30900"
                             echo "Grafana: http://$NODE_IP:30300"
                             '''
                         } catch (Exception e) {
-                            echo "Échec de la configuration du monitoring: ${e.getMessage()}"
+                            echo "Monitoring setup failed: ${e.getMessage()}"
                             currentBuild.result = 'UNSTABLE'
                         }
                     }
@@ -173,7 +165,6 @@ pipeline {
                     ]) {
                         try {
                             sh '''
-                            # Créer la configuration AlertManager
                             cat <<EOF > alertmanager-config.yml
                             global:
                               smtp_from: '$SMTP_USER'
@@ -196,12 +187,10 @@ pipeline {
                                 send_resolved: true
                             EOF
 
-                            # Créer le secret de configuration
                             kubectl -n monitoring create secret generic alertmanager-config \
                                 --from-file=alertmanager.yml=alertmanager-config.yml \
                                 --dry-run=client -o yaml | kubectl apply -f -
 
-                            # Déployer AlertManager
                             kubectl apply -n monitoring -f - <<EOF
                             apiVersion: apps/v1
                             kind: Deployment
@@ -217,52 +206,22 @@ pipeline {
                                   labels:
                                     app: alertmanager
                                 spec:
-                                  securityContext:
-                                    runAsUser: 1000
-                                    runAsGroup: 1000
-                                    fsGroup: 2000
                                   containers:
                                   - name: alertmanager
                                     image: quay.io/prometheus/alertmanager:v0.27.0
                                     args:
                                     - '--config.file=/etc/alertmanager/alertmanager.yml'
-                                    - '--storage.path=/alertmanager'
                                     ports:
                                     - containerPort: 9093
-                                      name: http
                                     volumeMounts:
                                     - name: config
                                       mountPath: /etc/alertmanager
-                                    - name: storage
-                                      mountPath: /alertmanager
-                                    resources:
-                                      requests:
-                                        cpu: "100m"
-                                        memory: "256Mi"
-                                      limits:
-                                        cpu: "500m"
-                                        memory: "512Mi"
-                                    livenessProbe:
-                                      httpGet:
-                                        path: /-/healthy
-                                        port: http
-                                      initialDelaySeconds: 10
-                                      periodSeconds: 10
-                                    readinessProbe:
-                                      httpGet:
-                                        path: /-/ready
-                                        port: http
-                                      initialDelaySeconds: 10
-                                      periodSeconds: 5
                                   volumes:
                                   - name: config
                                     secret:
                                       secretName: alertmanager-config
-                                  - name: storage
-                                    emptyDir: {}
                             EOF
 
-                            # Créer le Service
                             kubectl apply -n monitoring -f - <<EOF
                             apiVersion: v1
                             kind: Service
@@ -272,48 +231,18 @@ pipeline {
                               type: NodePort
                               ports:
                               - port: 9093
-                                targetPort: http
+                                targetPort: 9093
                                 nodePort: $ALERTMANAGER_PORT
                               selector:
                                 app: alertmanager
                             EOF
 
-                            # Configurer Prometheus pour utiliser AlertManager
-                            kubectl apply -n monitoring -f - <<EOF
-                            apiVersion: v1
-                            kind: ConfigMap
-                            metadata:
-                              name: prometheus-alertmanager-config
-                            data:
-                              prometheus.yml: |
-                                global:
-                                  scrape_interval: 15s
-                                  evaluation_interval: 15s
-                                
-                                alerting:
-                                  alertmanagers:
-                                  - static_configs:
-                                    - targets:
-                                      - alertmanager.monitoring.svc.cluster.local:9093
-                                
-                                rule_files:
-                                  - /etc/prometheus/rules/*.rules
-                                
-                                scrape_configs:
-                                  - job_name: 'prometheus'
-                                    static_configs:
-                                    - targets: ['localhost:9090']
-                            EOF
-
-                            # Redémarrer Prometheus pour appliquer les changements
-                            kubectl rollout restart statefulset prometheus-$HELM_RELEASE_NAME -n monitoring
-
-                            echo "🔔 ALERTMANAGER ACCESS:"
+                            echo "🔔 AlertManager Access:"
                             NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
                             echo "AlertManager UI: http://$NODE_IP:$ALERTMANAGER_PORT"
                             '''
                         } catch (Exception e) {
-                            echo "Échec du déploiement d'AlertManager: ${e.getMessage()}"
+                            echo "AlertManager deployment failed: ${e.getMessage()}"
                             currentBuild.result = 'UNSTABLE'
                         }
                     }
@@ -326,15 +255,14 @@ pipeline {
                 script {
                     withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
                         try {
-                            sh '''
-                            # Créer des règles d'alerte de base
-                            kubectl apply -n monitoring -f - <<EOF
+                            sh """
+                            cat <<EOF | kubectl apply -n monitoring -f -
                             apiVersion: monitoring.coreos.com/v1
                             kind: PrometheusRule
                             metadata:
                               name: basic-alerts
                               labels:
-                                prometheus: $HELM_RELEASE_NAME
+                                prometheus: ${HELM_RELEASE_NAME}
                                 role: alert-rules
                             spec:
                               groups:
@@ -346,8 +274,8 @@ pipeline {
                                   labels:
                                     severity: warning
                                   annotations:
-                                    summary: "High memory usage on pod {{ $labels.pod }}"
-                                    description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using {{ printf \"%.2f\" $value }}% of its memory limit."
+                                    summary: "High memory usage on pod {{\\$labels.pod}}"
+                                    description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\"%.2f\\" \\$value }}% of its memory limit."
                                 
                                 - alert: HighCPUUsage
                                   expr: sum(rate(container_cpu_usage_seconds_total{namespace!="",container!=""}[5m])) by (namespace,pod,container) / sum(container_spec_cpu_quota{namespace!="",container!=""}/container_spec_cpu_period{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
@@ -355,12 +283,12 @@ pipeline {
                                   labels:
                                     severity: warning
                                   annotations:
-                                    summary: "High CPU usage on pod {{ $labels.pod }}"
-                                    description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using {{ printf \"%.2f\" $value }}% of its CPU limit."
+                                    summary: "High CPU usage on pod {{\\$labels.pod}}"
+                                    description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\"%.2f\\" \\$value }}% of its CPU limit."
                             EOF
-                            '''
+                            """
                         } catch (Exception e) {
-                            echo "Échec de la configuration des alertes: ${e.getMessage()}"
+                            echo "Alert configuration failed: ${e.getMessage()}"
                             currentBuild.result = 'UNSTABLE'
                         }
                     }
@@ -380,7 +308,7 @@ pipeline {
                     kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
                     echo "Rollback to previous version completed"
 
-                    echo "Nettoyage du monitoring..."
+                    echo "Cleaning up monitoring..."
                     helm uninstall $HELM_RELEASE_NAME -n monitoring || true
                     kubectl delete deployment alertmanager -n monitoring --ignore-not-found=true || true
                     kubectl delete service alertmanager -n monitoring --ignore-not-found=true || true
