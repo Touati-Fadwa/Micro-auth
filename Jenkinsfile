@@ -167,7 +167,6 @@ pipeline {
                         )
                     ]) {
                         try {
-                            // Solution sécurisée pour éviter l'interpolation Groovy des secrets
                             sh '''
                             cat > alertmanager-config.yml <<EOF
 global:
@@ -178,11 +177,9 @@ global:
   smtp_require_tls: true
 
 route:
-  group_by: ['alertname']
+  receiver: 'email-notifications'
   group_wait: 30s
   group_interval: 5m
-  repeat_interval: 3h
-  receiver: 'email-notifications'
 
 receivers:
 - name: 'email-notifications'
@@ -193,12 +190,11 @@ EOF
                             '''
                             
                             sh """
-                            # Create AlertManager configuration secret
                             kubectl -n monitoring create secret generic alertmanager-config \
                                 --from-file=alertmanager.yml=alertmanager-config.yml \
                                 --dry-run=client -o yaml | kubectl apply -f -
-
-                            # Deploy AlertManager
+                            
+                            # Déploiement AlertManager
                             kubectl apply -n monitoring -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -231,7 +227,7 @@ spec:
           secretName: alertmanager-config
 EOF
 
-                            # Create AlertManager service
+                            # Service AlertManager
                             kubectl apply -n monitoring -f - <<EOF
 apiVersion: v1
 kind: Service
@@ -266,45 +262,32 @@ EOF
                 script {
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         try {
-                            // Utilisation de ''' pour éviter les problèmes d'échappement
                             sh '''
                             cat > prometheus-rules.yaml <<EOF
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: basic-alerts
+  name: disk-usage-alert
   namespace: monitoring
-  labels:
-    release: ${HELM_RELEASE_NAME}
-    role: alert-rules
 spec:
   groups:
-  - name: general.rules
+  - name: disk.rules
     rules:
-    - alert: HighPodMemoryUsage
-      expr: sum(container_memory_working_set_bytes{namespace!="",container!=""}) by (namespace,pod,container) / sum(container_spec_memory_limit_bytes{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
-      for: 5m
+    - alert: LowDiskSpace
+      expr: 100 - (100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 90
+      for: 10m
       labels:
-        severity: warning
+        severity: critical
       annotations:
-        summary: "High memory usage on pod {{\\$labels.pod}}"
-        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its memory limit."
-    
-    - alert: HighCPUUsage
-      expr: sum(rate(container_cpu_usage_seconds_total{namespace!="",container!=""}[5m])) by (namespace,pod,container) / sum(container_spec_cpu_quota{namespace!="",container!=""}/container_spec_cpu_period{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
-      for: 5m
-      labels:
-        severity: warning
-      annotations:
-        summary: "High CPU usage on pod {{\\$labels.pod}}"
-        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its CPU limit."
+        summary: "Disk space critically low on {{ \$labels.instance }}"
+        description: "Disk usage is {{ \$value }}% on {{ \$labels.instance }} (mount: {{ \$labels.mountpoint }})"
 EOF
                             '''
                             
                             sh """
                             kubectl apply -n monitoring -f prometheus-rules.yaml
                             rm -f prometheus-rules.yaml
-                            echo "✅ Alert rules configured successfully"
+                            echo "✅ Disk usage alert configured successfully"
                             """
                         } catch (Exception e) {
                             echo "⚠️ Alert configuration failed: ${e.getMessage()}"
