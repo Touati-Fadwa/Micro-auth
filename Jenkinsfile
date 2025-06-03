@@ -200,6 +200,124 @@ data:
         }
       }
     }
+
+    stage('Setup Alert Manager') {
+      steps {
+        script {
+          withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE'),
+                          usernamePassword(credentialsId: 'gmail-credentials', 
+                                          usernameVariable: 'GMAIL_USER', 
+                                          passwordVariable: 'GMAIL_PASSWORD')]) {
+            // Création des ressources Alertmanager
+            def alertManagerConfig = """
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  config.yml: |
+    global:
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: '${env.GMAIL_USER}'
+      smtp_auth_username: '${env.GMAIL_USER}'
+      smtp_auth_password: '${env.GMAIL_PASSWORD}'
+      smtp_require_tls: true
+    
+    route:
+      receiver: 'email-notifications'
+    
+    receivers:
+    - name: 'email-notifications'
+      email_configs:
+      - to: '${env.GMAIL_USER}'
+        send_resolved: true
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+      - name: alertmanager
+        image: prom/alertmanager:v0.25.0
+        args:
+          - '--config.file=/etc/alertmanager/config.yml'
+          - '--storage.path=/alertmanager'
+        ports:
+        - containerPort: 9093
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/alertmanager
+      volumes:
+      - name: config-volume
+        configMap:
+          name: alertmanager-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  type: NodePort
+  ports:
+  - port: 9093
+    targetPort: 9093
+    nodePort: 30903
+  selector:
+    app: alertmanager
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: disk-usage-alert
+  namespace: monitoring
+spec:
+  groups:
+  - name: disk-usage
+    rules:
+    - alert: HighDiskUsage
+      expr: 100 - (100 * node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) > 90
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "High disk usage on {{ $labels.instance }}"
+        description: "Disk usage is {{ $value }}% on {{ $labels.instance }} (mountpoint {{ $labels.mountpoint }})"
+"""
+
+            writeFile file: 'alertmanager-config.yaml', text: alertManagerConfig
+            
+            sh '''
+              # Appliquer la configuration Alertmanager
+              kubectl apply -f alertmanager-config.yaml
+              
+              # Configurer Prometheus pour utiliser Alertmanager
+              kubectl patch prometheus kube-prometheus-stack-prometheus -n monitoring --type merge \
+                --patch '{"spec":{"alerting":{"alertmanagers":[{"name":"alertmanager","namespace":"monitoring","port":9093}]}}}'
+              
+              echo "Alertmanager accessible via:"
+              NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+              echo "http://$NODE_IP:30903"
+            '''
+          }
+        }
+      }
+    }
   }
 
   post {
