@@ -2,11 +2,20 @@ pipeline {
   agent any
 
   environment {
+    // Configuration Docker
     IMAGE_NAME = "touatifadwa/bibliotheque-microauth"
     IMAGE_TAG = "latest"
     REGISTRY = "docker.io"
+    
+    // Configuration Kubernetes
     KUBE_NAMESPACE = "bibliotheque"
     HELM_RELEASE_NAME = "monitoring-stack"
+    
+    // Versions des composants
+    ALERTMANAGER_VERSION = "v0.26.0"
+    PROMETHEUS_STACK_VERSION = "55.7.1"
+    
+    // Credentials (stockés dans Jenkins)
     GMAIL_USER = credentials('gmail-user')
     GMAIL_APP_PASSWORD = credentials('gmail-app-password')
     ADMIN_EMAIL = credentials('admin-email')
@@ -19,7 +28,7 @@ pipeline {
       }
     }
 
-    stage('Install') {
+    stage('Install Dependencies') {
       steps {
         dir('microservice-auth') {
           sh 'npm ci'
@@ -83,19 +92,20 @@ pipeline {
       }
     }
 
-    stage('Deploy to K3s') {
+    stage('Deploy Application') {
       steps {
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n bibliotheque
+              kubectl apply -f k8s/bibliotheque-auth-deployment.yaml -n $KUBE_NAMESPACE
+              kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s
             '''
           }
         }
       }
     }
 
-    stage('Setup Complete Monitoring Stack') {
+    stage('Deploy Monitoring Stack') {
       steps {
         script {
           withCredentials([
@@ -105,70 +115,38 @@ pipeline {
             string(credentialsId: 'admin-email', variable: 'ADMIN_EMAIL')
           ]) {
             try {
+              // Création du namespace monitoring
               sh '''
-                # Création du namespace monitoring
                 kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-               
-                echo "Installation de la stack Prometheus + Grafana..."
-                helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \
-                    --namespace monitoring \
-                    --version 55.7.1 \
-                    --set kubeEtcd.enabled=false \
-                    --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-                    --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-                    --set prometheus.service.type=NodePort \
-                    --set prometheus.service.nodePort=30900 \
-                    --set grafana.service.type=NodePort \
-                    --set grafana.service.nodePort=30300 \
-                    --set alertmanager.enabled=false \
-                    --wait --timeout 5m
               '''
-             
-              // Configuration d'AlertManager avec Gmail
-              def alertmanagerConfig = """
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: alertmanager-config
-  namespace: monitoring
-data:
-  alertmanager.yml: |
-    global:
-      smtp_smarthost: 'smtp.gmail.com:587'
-      smtp_from: '${GMAIL_USER}'
-      smtp_auth_username: '${GMAIL_USER}'
-      smtp_auth_password: '${GMAIL_APP_PASSWORD}'
-      smtp_require_tls: true
+              
+              // Installation de la stack Prometheus avec AlertManager activé
+              sh """
+                helm upgrade --install $HELM_RELEASE_NAME prometheus-community/kube-prometheus-stack \\
+                    --namespace monitoring \\
+                    --version $PROMETHEUS_STACK_VERSION \\
+                    --set kubeEtcd.enabled=false \\
+                    --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \\
+                    --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \\
+                    --set prometheus.service.type=NodePort \\
+                    --set prometheus.service.nodePort=30900 \\
+                    --set grafana.service.type=NodePort \\
+                    --set grafana.service.nodePort=30300 \\
+                    --set grafana.adminPassword=prom-operator \\
+                    --set alertmanager.enabled=true \\
+                    --set alertmanager.config.global.smtp_smarthost='smtp.gmail.com:587' \\
+                    --set alertmanager.config.global.smtp_from='${GMAIL_USER}' \\
+                    --set alertmanager.config.global.smtp_auth_username='${GMAIL_USER}' \\
+                    --set alertmanager.config.global.smtp_auth_password='${GMAIL_APP_PASSWORD}' \\
+                    --set alertmanager.config.global.smtp_require_tls=true \\
+                    --set alertmanager.config.receivers[0].name='gmail-notifications' \\
+                    --set alertmanager.config.receivers[0].email_configs[0].to='${ADMIN_EMAIL}' \\
+                    --set alertmanager.config.receivers[0].email_configs[0].headers.subject='🚨 Alerte Kubernetes: {{ .CommonLabels.alertname }}' \\
+                    --set alertmanager.config.route.receiver='gmail-notifications' \\
+                    --wait --timeout 5m
+              """
 
-    route:
-      group_by: ['alertname']
-      group_wait: 10s
-      group_interval: 10s
-      repeat_interval: 1h
-      receiver: 'gmail-notifications'
-
-    receivers:
-    - name: 'gmail-notifications'
-      email_configs:
-      - to: '${ADMIN_EMAIL}'
-        subject: '🚨 ALERTE SYSTÈME - {{ .GroupLabels.alertname }}'
-        body: |
-          Alerte détectée sur le cluster Kubernetes:
-         
-          Nom de l'alerte: {{ .GroupLabels.alertname }}
-          Statut: {{ .Status }}
-         
-          Détails:
-          {{ range .Alerts }}
-          - Instance: {{ .Labels.instance }}
-          - Description: {{ .Annotations.description }}
-          - Valeur: {{ .Annotations.value }}
-          {{ end }}
-         
-          Timestamp: {{ .CommonAnnotations.timestamp }}
-"""
-
-              // Configuration Prometheus pour scraper l'API Gateway (CONSERVÉE)
+              // Configuration Prometheus pour scraper l'application
               def prometheusConfig = """
 apiVersion: v1
 kind: ConfigMap
@@ -180,11 +158,11 @@ data:
     - job_name: 'authentification'
       scrape_interval: 15s
       static_configs:
-        - targets: ['bibliotheque-authentification-service.bibliotheque.svc.cluster.local:3003']
+        - targets: ['bibliotheque-authentification-service.${KUBE_NAMESPACE}.svc.cluster.local:3003']
       metrics_path: /metrics
 """
-             
-              // Dashboard Grafana pour l'API Gateway (CONSERVÉ ET AMÉLIORÉ)
+
+              // Dashboard Grafana
               def grafanaDashboard = """
 apiVersion: v1
 kind: ConfigMap
@@ -196,191 +174,66 @@ metadata:
 data:
   api-gateway-dashboard.json: |
     {
-      "dashboard": {
-        "id": null,
-        "title": "Tableau de bord API Gateway & Système",
-        "tags": ["kubernetes", "api-gateway", "monitoring"],
-        "timezone": "browser",
-        "panels": [
-          {
-            "id": 1,
-            "title": "Utilisation CPU",
-            "type": "stat",
-            "targets": [
-              {
-                "expr": "100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\\"idle\\"}[5m])) * 100)",
-                "legendFormat": "CPU Usage %"
-              }
-            ],
-            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
-          },
-          {
-            "id": 2,
-            "title": "Utilisation Mémoire",
-            "type": "stat",
-            "targets": [
-              {
-                "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
-                "legendFormat": "Memory Usage %"
-              }
-            ],
-            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
-          },
-          {
-            "id": 3,
-            "title": "Utilisation Disque (%)",
-            "type": "gauge",
-            "targets": [
-              {
-                "expr": "100 - (100 * node_filesystem_avail_bytes / node_filesystem_size_bytes)",
-                "legendFormat": "{{ .Labels.mountpoint }}"
-              }
-            ],
-            "fieldConfig": {
-              "defaults": {
-                "thresholds": {
-                  "steps": [
-                    {"color": "green", "value": 0},
-                    {"color": "yellow", "value": 80},
-                    {"color": "red", "value": 90}
-                  ]
-                }
-              }
-            },
-            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
-          },
-          {
-            "id": 4,
-            "title": "Requêtes API Gateway",
-            "type": "graph",
-            "targets": [
-              {
-                "expr": "rate(http_requests_total[5m])",
-                "legendFormat": "Requêtes/sec"
-              }
-            ],
-            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
-          }
-        ],
-        "time": {"from": "now-1h", "to": "now"},
-        "refresh": "30s"
-      }
+      "title": "Microservice Auth Dashboard",
+      "panels": [
+        {
+          "title": "Requêtes HTTP",
+          "type": "graph",
+          "targets": [{
+            "expr": "rate(http_requests_total[5m])",
+            "legendFormat": "{{handler}}"
+          }]
+        }
+      ]
     }
 """
 
-              // Règles d'alerte pour l'espace disque
-              def diskAlertRules = """
+              // Règles d'alerte
+              def alertRules = """
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: prometheus-disk-rules
+  name: prometheus-custom-rules
   namespace: monitoring
 data:
-  disk-rules.yml: |
+  custom-rules.yml: |
     groups:
-    - name: disk-usage-alerts
+    - name: application-alerts
       rules:
-      - alert: DiskSpaceHigh
-        expr: 100 - (100 * node_filesystem_avail_bytes / node_filesystem_size_bytes) > 90
-        for: 2m
-        labels:
-          severity: critical
-          service: filesystem
-        annotations:
-          summary: "Espace disque critique sur {{ \$labels.instance }}"
-          description: "L'espace disque utilisé est de {{ \$value }}% sur le point de montage {{ \$labels.mountpoint }} de l'instance {{ \$labels.instance }}"
-          value: "{{ \$value }}%"
-     
-      - alert: DiskSpaceWarning
-        expr: 100 - (100 * node_filesystem_avail_bytes / node_filesystem_size_bytes) > 80
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.1
         for: 5m
         labels:
-          severity: warning
-          service: filesystem
+          severity: critical
         annotations:
-          summary: "Avertissement espace disque sur {{ \$labels.instance }}"
-          description: "L'espace disque utilisé est de {{ \$value }}% sur le point de montage {{ \$labels.mountpoint }} de l'instance {{ \$labels.instance }}"
-          value: "{{ \$value }}%"
+          summary: "High error rate on {{ $labels.instance }}"
+          description: "Error rate is {{ $value }}"
 """
-             
-              writeFile file: 'alertmanager-config.yaml', text: alertmanagerConfig
+
               writeFile file: 'prometheus-config.yaml', text: prometheusConfig
               writeFile file: 'grafana-dashboard.yaml', text: grafanaDashboard
-              writeFile file: 'disk-alert-rules.yaml', text: diskAlertRules
+              writeFile file: 'alert-rules.yaml', text: alertRules
              
               sh '''
-                # Application de toutes les configurations
-                kubectl apply -f alertmanager-config.yaml
+                # Application des configurations
                 kubectl apply -f prometheus-config.yaml
                 kubectl apply -f grafana-dashboard.yaml
-                kubectl apply -f disk-alert-rules.yaml
-               
-                # Déploiement d'AlertManager
-                kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: alertmanager
-  namespace: monitoring
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: alertmanager
-  template:
-    metadata:
-      labels:
-        app: alertmanager
-    spec:
-      containers:
-      - name: alertmanager
-        image: prom/alertmanager:v0.26.0
-        ports:
-        - containerPort: 9093
-        volumeMounts:
-        - name: config-volume
-          mountPath: /etc/alertmanager
-        args:
-        - '--config.file=/etc/alertmanager/alertmanager.yml'
-        - '--storage.path=/alertmanager'
-        - '--web.external-url=http://localhost:9093'
-      volumes:
-      - name: config-volume
-        configMap:
-          name: alertmanager-config
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: alertmanager-service
-  namespace: monitoring
-spec:
-  selector:
-    app: alertmanager
-  ports:
-  - port: 9093
-    targetPort: 9093
-    nodePort: 30093
-  type: NodePort
-EOF
-               
-                # Attendre que AlertManager soit prêt
-                kubectl wait --for=condition=available --timeout=300s deployment/alertmanager -n monitoring
-               
-                echo "🔍 LIENS MONITORING COMPLETS :"
+                kubectl apply -f alert-rules.yaml
+                
+                # Attente que tous les composants soient prêts
+                kubectl wait --for=condition=available --timeout=300s deployment/$HELM_RELEASE_NAME-grafana -n monitoring
+                kubectl wait --for=condition=available --timeout=300s deployment/$HELM_RELEASE_NAME-kube-prometheus-operator -n monitoring
+                kubectl wait --for=condition=available --timeout=300s deployment/$HELM_RELEASE_NAME-alertmanager -n monitoring
+                
+                # Affichage des URLs d'accès
+                echo "🔍 Monitoring URLs:"
                 NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
                 echo "Prometheus:   http://$NODE_IP:30900"
                 echo "Grafana:      http://$NODE_IP:30300 (admin/prom-operator)"
-                echo "AlertManager: http://$NODE_IP:30093"
-               
-                echo "✅ Configuration complète :"
-                echo "  - Prometheus : Collecte des métriques"
-                echo "  - Grafana : Dashboards visuels"
-                echo "  - AlertManager : Alertes Gmail à ${ADMIN_EMAIL}"
-                echo "  - Surveillance disque : Alerte à 90%"
+                echo "AlertManager: http://$NODE_IP:30903"
               '''
             } catch (Exception e) {
-              echo "Échec de la configuration du monitoring: ${e.getMessage()}"
+              echo "Erreur lors du déploiement du monitoring: ${e.getMessage()}"
               currentBuild.result = 'UNSTABLE'
             }
           }
@@ -393,22 +246,18 @@ EOF
         script {
           withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
             sh '''
-              echo "=== Deployment Status ==="
-              kubectl get deploy -n $KUBE_NAMESPACE
-             
-              echo "=== Service Details ==="
-              kubectl get svc -n $KUBE_NAMESPACE
-             
-              echo "=== Pods Status ==="
-              kubectl get pods -n $KUBE_NAMESPACE
-             
-              echo "=== Monitoring Stack Status ==="
-              kubectl get pods -n monitoring
-              kubectl get svc -n monitoring
-             
+              echo "=== Application Status ==="
+              kubectl get deploy,svc,pods -n $KUBE_NAMESPACE
+              
+              echo "=== Monitoring Status ==="
+              kubectl get deploy,svc,pods -n monitoring
+              
+              echo "=== Test Alert ==="
+              kubectl create configmap test-alert -n monitoring --from-literal=test=test --dry-run=client -o yaml | kubectl apply -f -
+              kubectl delete configmap test-alert -n monitoring
+              
               NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-              NODE_PORT=$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')
-              echo "Application accessible via: http://$NODE_IP:$NODE_PORT"
+              echo "Application URL: http://$NODE_IP:$(kubectl get svc bibliotheque-auth-service -n $KUBE_NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}')"
             '''
           }
         }
@@ -422,28 +271,24 @@ EOF
         echo "Pipeline failed! Attempting rollback..."
         withCredentials([file(credentialsId: 'K3S_CONFIG', variable: 'KUBECONFIG_FILE')]) {
           sh '''
-            echo "!!! Deployment failed - Initiating rollback !!!"
+            echo "!!! Rollback Application !!!"
             kubectl rollout undo deployment/bibliotheque-auth -n $KUBE_NAMESPACE || true
             kubectl rollout status deployment/bibliotheque-auth -n $KUBE_NAMESPACE --timeout=120s || true
-            echo "Rollback to previous version completed"
-           
-            echo "Nettoyage du monitoring..."
-            kubectl delete deployment alertmanager -n monitoring || true
-            kubectl delete service alertmanager-service -n monitoring || true
-            kubectl delete configmap alertmanager-config -n monitoring || true
-            kubectl delete configmap prometheus-disk-rules -n monitoring || true
+            
+            echo "!!! Cleanup Monitoring !!!"
+            helm uninstall $HELM_RELEASE_NAME -n monitoring || true
             kubectl delete configmap prometheus-authentification-config -n monitoring || true
             kubectl delete configmap grafana-authentification-dashboard -n monitoring || true
-            helm uninstall $HELM_RELEASE_NAME -n monitoring || true
-            kubectl delete namespace monitoring --ignore-not-found=true || true
+            kubectl delete configmap prometheus-custom-rules -n monitoring || true
           '''
         }
       }
     }
     always {
       sh 'docker logout $REGISTRY || true'
-      echo "Pipeline execution completed"
+      echo "Pipeline execution completed with status: ${currentBuild.result}"
+      slackSend(color: currentBuild.result == 'SUCCESS' ? 'good' : 'danger',
+                message: "Build ${currentBuild.result}: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
     }
   }
 }
-
