@@ -7,6 +7,8 @@ pipeline {
         KUBE_NAMESPACE = "bibliotheque"
         HELM_RELEASE_NAME = "monitoring-stack"
         ALERTMANAGER_PORT = "30903"
+        PROMETHEUS_PORT = "30900"
+        GRAFANA_PORT = "30300"
         DOCKER_CREDENTIALS_ID = "docker-hub-credentials"
         K3S_CONFIG_ID = "K3S_CONFIG"
         SMTP_CREDENTIALS_ID = "smtp-credentials"
@@ -129,22 +131,26 @@ pipeline {
                             sh """
                             kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
 
+                            # Installation simplifiée avec configuration intégrée Alertmanager
                             helm upgrade --install ${HELM_RELEASE_NAME} prometheus-community/kube-prometheus-stack \
                             --namespace monitoring \
                             --version 55.7.1 \
                             --set kubeEtcd.enabled=false \
+                            --set alertmanager.enabled=true \
+                            --set alertmanager.service.type=NodePort \
+                            --set alertmanager.service.nodePort=${ALERTMANAGER_PORT} \
                             --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-                            --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
                             --set prometheus.service.type=NodePort \
-                            --set prometheus.service.nodePort=30900 \
+                            --set prometheus.service.nodePort=${PROMETHEUS_PORT} \
                             --set grafana.service.type=NodePort \
-                            --set grafana.service.nodePort=30300 \
+                            --set grafana.service.nodePort=${GRAFANA_PORT} \
                             --wait --timeout 5m
 
                             echo "🔍 Monitoring Links:"
                             NODE_IP=\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-                            echo "Prometheus: http://\${NODE_IP}:30900"
-                            echo "Grafana: http://\${NODE_IP}:30300"
+                            echo "Prometheus: http://\${NODE_IP}:${PROMETHEUS_PORT}"
+                            echo "AlertManager: http://\${NODE_IP}:${ALERTMANAGER_PORT}"
+                            echo "Grafana: http://\${NODE_IP}:${GRAFANA_PORT}"
                             """
                         } catch (Exception e) {
                             echo "Monitoring setup failed: ${e.getMessage()}"
@@ -155,7 +161,7 @@ pipeline {
             }
         }
 
-        stage('Deploy AlertManager') {
+        stage('Configure AlertManager') {
             steps {
                 script {
                     withCredentials([
@@ -167,7 +173,6 @@ pipeline {
                         )
                     ]) {
                         try {
-                            // Solution sécurisée pour éviter l'interpolation Groovy des secrets
                             sh '''
                             cat > alertmanager-config.yml <<EOF
 global:
@@ -193,67 +198,16 @@ EOF
                             '''
                             
                             sh """
-                            # Create AlertManager configuration secret
-                            kubectl -n monitoring create secret generic alertmanager-config \
-                                --from-file=alertmanager.yml=alertmanager-config.yml \
-                                --dry-run=client -o yaml | kubectl apply -f -
-
-                            # Deploy AlertManager
-                            kubectl apply -n monitoring -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: alertmanager
-  namespace: monitoring
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: alertmanager
-  template:
-    metadata:
-      labels:
-        app: alertmanager
-    spec:
-      containers:
-      - name: alertmanager
-        image: quay.io/prometheus/alertmanager:v0.27.0
-        args:
-        - '--config.file=/etc/alertmanager/alertmanager.yml'
-        ports:
-        - containerPort: 9093
-        volumeMounts:
-        - name: config
-          mountPath: /etc/alertmanager
-      volumes:
-      - name: config
-        secret:
-          secretName: alertmanager-config
-EOF
-
-                            # Create AlertManager service
-                            kubectl apply -n monitoring -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: alertmanager
-  namespace: monitoring
-spec:
-  type: NodePort
-  ports:
-  - port: 9093
-    targetPort: 9093
-    nodePort: ${ALERTMANAGER_PORT}
-  selector:
-    app: alertmanager
-EOF
-
-                            echo "🔔 AlertManager Access:"
-                            NODE_IP=\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-                            echo "AlertManager UI: http://\${NODE_IP}:${ALERTMANAGER_PORT}"
+                            # Mise à jour de la configuration existante
+                            kubectl create secret generic alertmanager-${HELM_RELEASE_NAME}-alertmanager \
+                                --from-file=alertmanager.yaml=alertmanager-config.yml \
+                                --dry-run=client -o yaml | kubectl apply -n monitoring -f -
+                            
+                            # Redémarrage d'Alertmanager pour appliquer les changements
+                            kubectl rollout restart statefulset/alertmanager-${HELM_RELEASE_NAME}-alertmanager -n monitoring
                             """
                         } catch (Exception e) {
-                            echo "AlertManager deployment failed: ${e.getMessage()}"
+                            echo "AlertManager configuration failed: ${e.getMessage()}"
                             currentBuild.result = 'UNSTABLE'
                         }
                     }
@@ -266,7 +220,6 @@ EOF
                 script {
                     withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
                         try {
-                            // Utilisation de ''' pour éviter les problèmes d'échappement
                             sh '''
                             cat > prometheus-rules.yaml <<EOF
 apiVersion: monitoring.coreos.com/v1
@@ -287,8 +240,8 @@ spec:
       labels:
         severity: warning
       annotations:
-        summary: "High memory usage on pod {{\\$labels.pod}}"
-        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its memory limit."
+        summary: "High memory usage on pod {{ \$labels.pod }}"
+        description: "Pod {{ \$labels.pod }} in namespace {{ \$labels.namespace }} is using {{ printf \"%.2f\" \$value }}% of its memory limit."
     
     - alert: HighCPUUsage
       expr: sum(rate(container_cpu_usage_seconds_total{namespace!="",container!=""}[5m])) by (namespace,pod,container) / sum(container_spec_cpu_quota{namespace!="",container!=""}/container_spec_cpu_period{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
@@ -296,8 +249,8 @@ spec:
       labels:
         severity: warning
       annotations:
-        summary: "High CPU usage on pod {{\\$labels.pod}}"
-        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its CPU limit."
+        summary: "High CPU usage on pod {{ \$labels.pod }}"
+        description: "Pod {{ \$labels.pod }} in namespace {{ \$labels.namespace }} is using {{ printf \"%.2f\" \$value }}% of its CPU limit."
 EOF
                             '''
                             
@@ -329,9 +282,6 @@ EOF
 
                     echo "Cleaning up monitoring..."
                     helm uninstall ${HELM_RELEASE_NAME} -n monitoring || true
-                    kubectl delete deployment alertmanager -n monitoring --ignore-not-found=true || true
-                    kubectl delete service alertmanager -n monitoring --ignore-not-found=true || true
-                    kubectl delete secret alertmanager-config -n monitoring --ignore-not-found=true || true
                     kubectl delete namespace monitoring --ignore-not-found=true || true
                     """
                 }
