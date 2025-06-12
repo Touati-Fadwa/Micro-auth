@@ -1,59 +1,91 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import "@testing-library/jest-dom";
-import Login from "../pages/Login";
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
+const { User } = require("../src/models");
+const authController = require("../src/controllers/auth");
 
-describe("Login Component", () => {
-  const mockOnLogin = jest.fn();
+
+// Mock des modules
+jest.mock("jsonwebtoken");
+jest.mock("bcrypt");
+jest.mock("../src/models", () => ({
+  User: {
+    findOne: jest.fn(),
+    create: jest.fn(),
+    findByPk: jest.fn()
+  },
+}));
+
+
+describe("Auth Controller", () => {
+  let req, res;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        id: 1,
-        name: "Test User",
-        role: "admin",
-        token: "fake-token",
-      }),
-    });
+
+    req = {
+      body: {},
+      user: { role: "admin", id: 1 }, // pour le test de register et me
+    };
+
+    res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    process.env.JWT_SECRET = "test-secret";
   });
 
-  test("affiche le formulaire", () => {
-    render(<Login onLogin={mockOnLogin} />);
-    ["Bibliothèque ISET", "Connexion", "Email", "Mot de passe", "Étudiant", "Administrateur"].forEach(label => {
-      expect(screen.getByText(label) || screen.getByLabelText(label)).toBeInTheDocument();
-    });
-    expect(screen.getByRole("button", { name: /se connecter/i })).toBeInTheDocument();
-  });
+  describe("login", () => {
+    test("should return 401 if user is not found", async () => {
+      req.body = { email: "test@example.com", password: "password123" };
+      User.findOne.mockResolvedValue(null);
 
-  test("soumet le formulaire avec succès", async () => {
-    render(<Login onLogin={mockOnLogin} />);
-    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "test@example.com" } });
-    fireEvent.change(screen.getByLabelText("Mot de passe"), { target: { value: "password123" } });
-    fireEvent.click(screen.getByLabelText("Administrateur"));
-    fireEvent.click(screen.getByRole("button", { name: /se connecter/i }));
+      await authController.login(req, res);
 
-    await waitFor(() => {
-      expect(mockOnLogin).toHaveBeenCalledWith({
-        id: 1, name: "Test User", role: "admin", token: "fake-token",
+      expect(User.findOne).toHaveBeenCalledWith({
+        where: { email: "test@example.com" }
       });
-    });
-  });
-
-  test("affiche une erreur si la connexion échoue", async () => {
-    global.fetch.mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ message: "Email, mot de passe ou rôle incorrect" }),
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({ message: "Identifiants incorrects" });
     });
 
-    render(<Login onLogin={mockOnLogin} />);
-    ["Email", "Mot de passe"].forEach((label, i) => {
-      fireEvent.change(screen.getByLabelText(label), { target: { value: i === 0 ? "wrong@example.com" : "wrongpassword" } });
-    });
-    fireEvent.click(screen.getByLabelText("Administrateur"));
-    fireEvent.click(screen.getByRole("button", { name: /se connecter/i }));
+    test("should return 401 if password is invalid", async () => {
+      req.body = { email: "test@example.com", password: "wrongpass" };
+      const mockUser = {
+        id: 1,
+        email: "test@example.com",
+        password: "hashed-password",
+        role: "student",
+      };
+      User.findOne.mockResolvedValue(mockUser);
+      bcrypt.compare.mockResolvedValue(false);
 
-    expect(await screen.findByText(/incorrect/i)).toBeInTheDocument();
-    expect(mockOnLogin).not.toHaveBeenCalled();
+      await authController.login(req, res);
+
+      expect(bcrypt.compare).toHaveBeenCalledWith("wrongpass", "hashed-password");
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.json).toHaveBeenCalledWith({ message: "Identifiants incorrects" });
+    });
+
+    test("should return 403 if role does not match", async () => {
+      req.body = { email: "test@example.com", password: "password123", role: "admin" };
+      const mockUser = {
+        id: 1,
+        email: "test@example.com",
+        password: "hashed-password",
+        role: "student",
+      };
+      User.findOne.mockResolvedValue(mockUser);
+      bcrypt.compare.mockResolvedValue(true);
+
+      await authController.login(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith({ message: "Accès refusé pour ce rôle" });
+    });
+
+    
   });
 });
+
+	
