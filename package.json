@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "jest",
-    "build": "echo 'No build needed for this microservice'"
+    "build": "npm audit && npm prune --production && echo 'Build réussi : Microservice prêt pour la production'"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
