@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test": "jest",
-    "build": "npm install --production && npm audit fix --force"
+    "build": "npm audit && npm prune --production"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
