@@ -38,7 +38,7 @@ pipeline {
         stage('Test') {
             steps {
                 dir('microservice-auth') {
-                    sh 'npm test'
+                    sh 'npm test -- --coverage'
                 }
             }
         }
@@ -121,7 +121,199 @@ pipeline {
             }
         }
 
-        
+        stage('Setup Monitoring Stack') {
+            steps {
+                script {
+                    withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
+                        try {
+                            sh """
+                            kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+                            helm upgrade --install ${HELM_RELEASE_NAME} prometheus-community/kube-prometheus-stack \
+                            --namespace monitoring \
+                            --version 55.7.1 \
+                            --set kubeEtcd.enabled=false \
+                            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+                            --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+                            --set prometheus.service.type=NodePort \
+                            --set prometheus.service.nodePort=30900 \
+                            --set grafana.service.type=NodePort \
+                            --set grafana.service.nodePort=30300 \
+                            --wait --timeout 5m
+
+                            echo "🔍 Monitoring Links:"
+                            NODE_IP=\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                            echo "Prometheus: http://\${NODE_IP}:30900"
+                            echo "Grafana: http://\${NODE_IP}:30300"
+                            """
+                        } catch (Exception e) {
+                            echo "Monitoring setup failed: ${e.getMessage()}"
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Deploy AlertManager') {
+            steps {
+                script {
+                    withCredentials([
+                        file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE'),
+                        usernamePassword(
+                            credentialsId: env.SMTP_CREDENTIALS_ID,
+                            usernameVariable: 'SMTP_USER',
+                            passwordVariable: 'SMTP_PASSWORD'
+                        )
+                    ]) {
+                        try {
+                            // Solution sécurisée pour éviter l'interpolation Groovy des secrets
+                            sh '''
+                            cat > alertmanager-config.yml <<EOF
+global:
+  smtp_from: '${SMTP_USER}'
+  smtp_smarthost: 'smtp.gmail.com:587'
+  smtp_auth_username: '${SMTP_USER}'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  smtp_require_tls: true
+
+route:
+  group_by: ['alertname']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h
+  receiver: 'email-notifications'
+
+receivers:
+- name: 'email-notifications'
+  email_configs:
+  - to: '${SMTP_USER}'
+    send_resolved: true
+EOF
+                            '''
+                           
+                            sh """
+                            # Create AlertManager configuration secret
+                            kubectl -n monitoring create secret generic alertmanager-config \
+                                --from-file=alertmanager.yml=alertmanager-config.yml \
+                                --dry-run=client -o yaml | kubectl apply -f -
+
+                            # Deploy AlertManager
+                            kubectl apply -n monitoring -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      containers:
+      - name: alertmanager
+        image: quay.io/prometheus/alertmanager:v0.27.0
+        args:
+        - '--config.file=/etc/alertmanager/alertmanager.yml'
+        ports:
+        - containerPort: 9093
+        volumeMounts:
+        - name: config
+          mountPath: /etc/alertmanager
+      volumes:
+      - name: config
+        secret:
+          secretName: alertmanager-config
+EOF
+
+                            # Create AlertManager service
+                            kubectl apply -n monitoring -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+spec:
+  type: NodePort
+  ports:
+  - port: 9093
+    targetPort: 9093
+    nodePort: ${ALERTMANAGER_PORT}
+  selector:
+    app: alertmanager
+EOF
+
+                            echo "🔔 AlertManager Access:"
+                            NODE_IP=\$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+                            echo "AlertManager UI: http://\${NODE_IP}:${ALERTMANAGER_PORT}"
+                            """
+                        } catch (Exception e) {
+                            echo "AlertManager deployment failed: ${e.getMessage()}"
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Configure Alerts') {
+            steps {
+                script {
+                    withCredentials([file(credentialsId: env.K3S_CONFIG_ID, variable: 'KUBECONFIG_FILE')]) {
+                        try {
+                            // Utilisation de ''' pour éviter les problèmes d'échappement
+                            sh '''
+                            cat > prometheus-rules.yaml <<EOF
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: basic-alerts
+  namespace: monitoring
+  labels:
+    release: ${HELM_RELEASE_NAME}
+    role: alert-rules
+spec:
+  groups:
+  - name: general.rules
+    rules:
+    - alert: HighPodMemoryUsage
+      expr: sum(container_memory_working_set_bytes{namespace!="",container!=""}) by (namespace,pod,container) / sum(container_spec_memory_limit_bytes{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage on pod {{\\$labels.pod}}"
+        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its memory limit."
+   
+    - alert: HighCPUUsage
+      expr: sum(rate(container_cpu_usage_seconds_total{namespace!="",container!=""}[5m])) by (namespace,pod,container) / sum(container_spec_cpu_quota{namespace!="",container!=""}/container_spec_cpu_period{namespace!="",container!=""}) by (namespace,pod,container) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage on pod {{\\$labels.pod}}"
+        description: "Pod {{\\$labels.pod}} in namespace {{\\$labels.namespace}} is using {{ printf \\\\"%.2f\\\\" \\$value }}% of its CPU limit."
+EOF
+                            '''
+                           
+                            sh """
+                            kubectl apply -n monitoring -f prometheus-rules.yaml
+                            rm -f prometheus-rules.yaml
+                            echo "✅ Alert rules configured successfully"
+                            """
+                        } catch (Exception e) {
+                            echo "⚠️ Alert configuration failed: ${e.getMessage()}"
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    }
+                }
+            }
+        }
     }
 
     post {
@@ -152,3 +344,4 @@ pipeline {
         }
     }
 }
+	
