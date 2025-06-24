@@ -18,6 +18,7 @@ pipeline {
                 checkout scm
             }
         }
+        
 
         stage('Install') {
             steps {
@@ -26,7 +27,7 @@ pipeline {
                 }
             }
         }
-        
+
 
         stage('Build') {
             steps {
