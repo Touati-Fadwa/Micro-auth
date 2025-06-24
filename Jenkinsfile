@@ -31,6 +31,7 @@ pipeline {
         }
 
 
+
         stage('Build') {
             steps {
                 dir('microservice-auth') {
